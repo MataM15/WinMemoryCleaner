@@ -8,6 +8,7 @@ namespace WinMemoryCleaner
     internal sealed class OptimizationTiming
     {
         private readonly Func<TimeSpan> _clock;
+        private readonly TimeSpan _startedAt;
 
         internal OptimizationTiming(Func<TimeSpan> clock)
         {
@@ -15,6 +16,14 @@ namespace WinMemoryCleaner
                 throw new ArgumentNullException("clock");
 
             _clock = clock;
+            _startedAt = _clock();
+        }
+
+        internal TimeSpan FinalAppReleaseDuration { get; private set; }
+
+        internal TimeSpan Elapsed
+        {
+            get { return _clock().Subtract(_startedAt); }
         }
 
         internal TimeSpan Measure(Action stage)
@@ -29,11 +38,23 @@ namespace WinMemoryCleaner
             return _clock().Subtract(startedAt);
         }
 
-        internal TimeSpan Complete(TimeSpan successfulNativeRuntime, Action finalAppRelease)
+        internal TimeSpan Complete(Action finalAppRelease)
         {
-            Measure(finalAppRelease);
+            if (finalAppRelease == null)
+                throw new ArgumentNullException("finalAppRelease");
 
-            return successfulNativeRuntime;
+            var finalAppReleaseStartedAt = _clock();
+
+            try
+            {
+                finalAppRelease();
+            }
+            finally
+            {
+                FinalAppReleaseDuration = _clock().Subtract(finalAppReleaseStartedAt);
+            }
+
+            return Elapsed;
         }
     }
 

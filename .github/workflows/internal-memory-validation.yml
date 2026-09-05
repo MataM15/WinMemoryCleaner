@@ -113,7 +113,9 @@ jobs:
             "$releaseMemoryFixture.ReleaseMemory_WhenCombined_RunsGarbageCollectionBeforeWorkingSetTrim",
             "$releaseMemoryFixture.ReleaseMemory_WhenGarbageCollectionThrows_StillRunsWorkingSetTrim",
             "$releaseMemoryFixture.ReleaseMemory_WhenWorkingSetTrimThrows_DoesNotPreventGarbageCollection",
-            "$releaseMemoryFixture.OptimizeTiming_WhenFinalAppReleaseRuns_IncludesItInTotalDuration"
+            "$releaseMemoryFixture.OptimizeTiming_WhenFinalAppReleaseRuns_IncludesItInTotalDuration",
+            "$releaseMemoryFixture.OptimizeTiming_WhenNativeStageFailsAndOverheadRuns_IncludesAllElapsedTime",
+            "$releaseMemoryFixture.OptimizeTiming_WhenFinalAppReleaseThrows_CapturesItsDuration"
           )
 
       - name: Upload focused NUnit XML
