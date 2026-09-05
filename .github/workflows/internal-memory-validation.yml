@@ -104,7 +104,7 @@ jobs:
             "$nativeFixture.IsAdjustTokenPrivilegesSuccessful_WhenNativeCallFailsWithError_ReturnsFalse"
           )
 
-          $releaseMemoryFixture = 'WinMemoryCleaner.ReleaseMemoryTests.ReleaseMemoryTests'
+          $releaseMemoryFixture = 'WinMemoryCleaner.MemoryReleaseTests.ReleaseMemoryTests'
           Invoke-SafeFixture $releaseMemoryFixture 'release-memory-results.xml' @(
             "$releaseMemoryFixture.ReleaseMemory_WhenModeIsNone_DoesNotRunCleanupStages",
             "$releaseMemoryFixture.ReleaseMemory_WhenModeIsGCOnly_RunsOnlyGarbageCollection",
