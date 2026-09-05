@@ -156,6 +156,73 @@ jobs:
             -TestAssembly "$env:GITHUB_WORKSPACE\src\bin\Release\WinMemoryCleaner.exe" `
             -TestRunner "$env:GITHUB_WORKSPACE\src\packages\NUnit.Runners.2.6.4\tools\nunit-console.exe"
 
+      - name: Stage experimental portable Windows artifact
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stageRoot = Join-Path $env:RUNNER_TEMP "winmemorycleaner-internal-memory-test-$env:GITHUB_SHA"
+          $payloadFiles = @(
+            [pscustomobject]@{ Source = 'src\bin\Release\WinMemoryCleaner.exe'; Destination = 'WinMemoryCleaner.exe'; Required = $true }
+            [pscustomobject]@{ Source = 'src\bin\Release\nunit.framework.dll'; Destination = 'nunit.framework.dll'; Required = $true }
+            [pscustomobject]@{ Source = 'src\bin\Release\WinMemoryCleaner.exe.config'; Destination = 'WinMemoryCleaner.exe.config'; Required = $false }
+            [pscustomobject]@{ Source = 'LICENSE'; Destination = 'LICENSE'; Required = $true }
+          )
+          $requiredPayload = @('WinMemoryCleaner.exe', 'nunit.framework.dll', 'LICENSE', 'BUILD-INFO.txt')
+          $allowedPayload = @('WinMemoryCleaner.exe', 'nunit.framework.dll', 'WinMemoryCleaner.exe.config', 'LICENSE', 'BUILD-INFO.txt', 'SHA256SUMS.txt')
+
+          if (Test-Path -LiteralPath $stageRoot) {
+            throw "Refusing to reuse existing artifact staging directory: $stageRoot"
+          }
+          New-Item -ItemType Directory -Path $stageRoot -ErrorAction Stop | Out-Null
+
+          foreach ($payloadFile in $payloadFiles) {
+            if (-not (Test-Path -LiteralPath $payloadFile.Source -PathType Leaf)) {
+              if ($payloadFile.Required) {
+                throw "Required artifact file was not produced by the green build: $($payloadFile.Source)"
+              }
+              continue
+            }
+            Copy-Item -LiteralPath $payloadFile.Source -Destination (Join-Path $stageRoot $payloadFile.Destination) -ErrorAction Stop
+          }
+
+          $buildInfo = @"
+          WinMemoryCleaner experimental CI build
+          Repository: $env:GITHUB_REPOSITORY
+          Commit: $env:GITHUB_SHA
+          Run: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/actions/runs/$env:GITHUB_RUN_ID
+
+          This is an experimental, unofficial, unsigned build. No Authenticode signature is present.
+          Portable use: extract all files to one folder and keep nunit.framework.dll next to WinMemoryCleaner.exe.
+          Run as administrator on Windows with .NET Framework 4.0 or later.
+          Persisted automatic optimization settings may still apply.
+          "@
+          $buildInfo = $buildInfo.Trim() + [Environment]::NewLine
+          [System.IO.File]::WriteAllText((Join-Path $stageRoot 'BUILD-INFO.txt'), $buildInfo, [System.Text.UTF8Encoding]::new($false))
+
+          $missingPayload = @($requiredPayload | Where-Object { -not (Test-Path -LiteralPath (Join-Path $stageRoot $_) -PathType Leaf) })
+          if ($missingPayload.Count -ne 0) {
+            throw "Artifact staging is missing required files: $($missingPayload -join ', ')"
+          }
+          $unexpectedPayload = @(Get-ChildItem -LiteralPath $stageRoot -File | Where-Object { $_.Name -notin $allowedPayload })
+          if ($unexpectedPayload.Count -ne 0) {
+            throw "Artifact staging contains unexpected files: $($unexpectedPayload.Name -join ', ')"
+          }
+
+          $checksumLines = @(Get-ChildItem -LiteralPath $stageRoot -File |
+            Where-Object { $_.Name -ne 'SHA256SUMS.txt' } |
+            Sort-Object Name |
+            Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "{0} *{1}" -f $_.Hash.ToLowerInvariant(), [System.IO.Path]::GetFileName($_.Path) })
+          [System.IO.File]::WriteAllLines((Join-Path $stageRoot 'SHA256SUMS.txt'), $checksumLines, [System.Text.UTF8Encoding]::new($false))
+
+      - name: Upload experimental portable Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: winmemorycleaner-internal-memory-test-${{ github.sha }}
+          path: ${{ runner.temp }}\winmemorycleaner-internal-memory-test-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Upload focused NUnit XML
         if: always()
         uses: actions/upload-artifact@v4
