@@ -140,6 +140,58 @@ jobs:
             exit $testExitCode
           }
 
+      - name: Run focused optimization request coordinator tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fixture = 'WinMemoryCleaner.Test.CoreTests+OptimizationRequestCoordinatorTests'
+          $testAssembly = 'src\bin\Release\WinMemoryCleaner.exe'
+          $testRunner = 'src\packages\NUnit.Runners.2.6.4\tools\nunit-console.exe'
+          $resultsPath = 'coordinator-results.xml'
+          $expectedTests = @(
+            "$fixture.PendingRequestsAreDiscardedWithoutPreparation",
+            "$fixture.CompletedWorkAllowsNextRequest",
+            "$fixture.ThrowingWorkReleasesReservation",
+            "$fixture.RejectedSchedulingReleasesReservation",
+            "$fixture.ThrowingSchedulingReleasesReservation",
+            "$fixture.ThrowingPreparationReleasesReservation",
+            "$fixture.RunningRequestsAreDiscarded",
+            "$fixture.ConcurrentRequestsScheduleExactlyOnce"
+          )
+
+          if (-not (Test-Path $testRunner)) {
+            throw "NUnit runner was not restored at $testRunner"
+          }
+
+          & $testRunner $testAssembly "/fixture:$fixture" "/xml:$resultsPath"
+          $testExitCode = $LASTEXITCODE
+
+          if (-not (Test-Path $resultsPath)) {
+            throw "NUnit did not write $resultsPath"
+          }
+
+          [xml]$results = Get-Content -Raw $resultsPath
+          $testCases = @($results.SelectNodes('//test-case'))
+          if ($testCases.Count -ne 8) {
+            throw "Expected exactly 8 focused test cases, found $($testCases.Count)"
+          }
+
+          $actualNames = @($testCases | ForEach-Object { $_.name })
+          if (@(Compare-Object -ReferenceObject $expectedTests -DifferenceObject $actualNames).Count -ne 0) {
+            throw 'NUnit XML did not contain exactly the expected focused test cases'
+          }
+
+          $nonPassingCases = @($testCases | Where-Object {
+            $_.executed -ne 'True' -or $_.result -ne 'Success' -or $_.success -ne 'True'
+          })
+          if ($nonPassingCases.Count -ne 0) {
+            throw "Focused NUnit XML contains non-passing tests: $($nonPassingCases.name -join ', ')"
+          }
+
+          if ($testExitCode -ne 0) {
+            exit $testExitCode
+          }
+
       - name: Stage experimental Windows artifact from green build
         shell: pwsh
         run: |
@@ -312,6 +364,7 @@ jobs:
             monitor-wait-results.xml
             monitor-wait-mutation-results.xml
             security-policy-results.xml
+            coordinator-results.xml
           if-no-files-found: warn
           retention-days: 7
 

@@ -1,7 +1,9 @@
 using NUnit.Framework;
 using System;
 using System.ComponentModel;
+using System.Collections.Generic;
 using System.IO;
+using System.Threading;
 
 #pragma warning disable CS1591 // Missing XML comment for publicly visible type or member
 
@@ -1320,6 +1322,299 @@ namespace WinMemoryCleaner.Test
         }
 
         #endregion
+
+        [TestFixture]
+        public class OptimizationRequestCoordinatorTests
+        {
+            private const int ThreadTimeoutMilliseconds = 2000;
+
+            [Test]
+            public void PendingRequestsAreDiscardedWithoutPreparation()
+            {
+                var scheduler = new FakeScheduler();
+                var coordinator = new OptimizationRequestCoordinator(scheduler.Schedule);
+                var preparations = 0;
+                var executions = 0;
+
+                Assert.IsTrue(coordinator.TryQueue(() => preparations++, () => executions++));
+                Assert.IsFalse(coordinator.TryQueue(() => preparations++, () => executions++));
+
+                Assert.AreEqual(1, scheduler.ScheduleCount);
+                Assert.AreEqual(1, preparations);
+                Assert.AreEqual(0, executions);
+                Assert.AreEqual(1, scheduler.PendingCount);
+            }
+
+            [Test]
+            public void CompletedWorkAllowsNextRequest()
+            {
+                var scheduler = new FakeScheduler();
+                var coordinator = new OptimizationRequestCoordinator(scheduler.Schedule);
+                var preparations = 0;
+                var executions = 0;
+
+                Assert.IsTrue(coordinator.TryQueue(() => preparations++, () => executions++));
+                scheduler.ExecuteNext();
+                Assert.IsTrue(coordinator.TryQueue(() => preparations++, () => executions++));
+
+                Assert.AreEqual(2, scheduler.ScheduleCount);
+                Assert.AreEqual(2, preparations);
+                Assert.AreEqual(1, executions);
+                Assert.AreEqual(1, scheduler.PendingCount);
+            }
+
+            [Test]
+            public void ThrowingWorkReleasesReservation()
+            {
+                var scheduler = new FakeScheduler();
+                var coordinator = new OptimizationRequestCoordinator(scheduler.Schedule);
+                var preparations = 0;
+                var executions = 0;
+
+                Assert.IsTrue(coordinator.TryQueue(() => preparations++, () => { executions++; throw new InvalidOperationException(); }));
+                Assert.Throws<InvalidOperationException>(() => scheduler.ExecuteNext());
+                Assert.IsTrue(coordinator.TryQueue(() => preparations++, () => executions++));
+
+                Assert.AreEqual(2, scheduler.ScheduleCount);
+                Assert.AreEqual(2, preparations);
+                Assert.AreEqual(1, executions);
+                Assert.AreEqual(1, scheduler.PendingCount);
+            }
+
+            [Test]
+            public void RejectedSchedulingReleasesReservation()
+            {
+                var scheduler = new FakeScheduler { AcceptsRequests = false };
+                var coordinator = new OptimizationRequestCoordinator(scheduler.Schedule);
+                var preparations = 0;
+                var executions = 0;
+
+                Assert.IsFalse(coordinator.TryQueue(() => preparations++, () => executions++));
+                scheduler.AcceptsRequests = true;
+                Assert.IsTrue(coordinator.TryQueue(() => preparations++, () => executions++));
+
+                Assert.AreEqual(2, scheduler.ScheduleCount);
+                Assert.AreEqual(2, preparations);
+                Assert.AreEqual(0, executions);
+                Assert.AreEqual(1, scheduler.PendingCount);
+            }
+
+            [Test]
+            public void ThrowingSchedulingReleasesReservation()
+            {
+                var scheduler = new FakeScheduler { ExceptionToThrow = new InvalidOperationException() };
+                var coordinator = new OptimizationRequestCoordinator(scheduler.Schedule);
+                var preparations = 0;
+                var executions = 0;
+
+                Assert.Throws<InvalidOperationException>(() => coordinator.TryQueue(() => preparations++, () => executions++));
+                scheduler.ExceptionToThrow = null;
+                Assert.IsTrue(coordinator.TryQueue(() => preparations++, () => executions++));
+
+                Assert.AreEqual(2, scheduler.ScheduleCount);
+                Assert.AreEqual(2, preparations);
+                Assert.AreEqual(0, executions);
+                Assert.AreEqual(1, scheduler.PendingCount);
+            }
+
+            [Test]
+            public void ThrowingPreparationReleasesReservation()
+            {
+                var scheduler = new FakeScheduler();
+                var coordinator = new OptimizationRequestCoordinator(scheduler.Schedule);
+                var preparations = 0;
+                var executions = 0;
+
+                Assert.Throws<InvalidOperationException>(() => coordinator.TryQueue(() => { preparations++; throw new InvalidOperationException(); }, () => executions++));
+                Assert.IsTrue(coordinator.TryQueue(() => preparations++, () => executions++));
+
+                Assert.AreEqual(1, scheduler.ScheduleCount);
+                Assert.AreEqual(2, preparations);
+                Assert.AreEqual(0, executions);
+                Assert.AreEqual(1, scheduler.PendingCount);
+            }
+
+            [Test]
+            public void RunningRequestsAreDiscarded()
+            {
+                var scheduler = new FakeScheduler();
+                var coordinator = new OptimizationRequestCoordinator(scheduler.Schedule);
+                var preparations = 0;
+                var executions = 0;
+                Exception workerException = null;
+                Thread worker = null;
+
+                using (var started = new ManualResetEvent(false))
+                using (var complete = new ManualResetEvent(false))
+                {
+                    Assert.IsTrue(coordinator.TryQueue(() => preparations++, () =>
+                    {
+                        Interlocked.Increment(ref executions);
+                        started.Set();
+                        complete.WaitOne(ThreadTimeoutMilliseconds);
+                    }));
+
+                    try
+                    {
+                        worker = new Thread(() =>
+                        {
+                            try
+                            {
+                                scheduler.ExecuteNext();
+                            }
+                            catch (Exception e)
+                            {
+                                workerException = e;
+                            }
+                        });
+                        worker.Start();
+                        Assert.IsTrue(started.WaitOne(ThreadTimeoutMilliseconds));
+
+                        Assert.IsFalse(coordinator.TryQueue(() => preparations++, () => executions++));
+                        Assert.AreEqual(1, scheduler.ScheduleCount);
+                        Assert.AreEqual(1, preparations);
+                        Assert.AreEqual(1, executions);
+                        Assert.AreEqual(0, scheduler.PendingCount);
+                    }
+                    finally
+                    {
+                        complete.Set();
+                        if (worker != null)
+                            Assert.IsTrue(worker.Join(ThreadTimeoutMilliseconds));
+                    }
+                }
+
+                Assert.IsNull(workerException);
+            }
+
+            [Test]
+            public void ConcurrentRequestsScheduleExactlyOnce()
+            {
+                const int threadCount = 18;
+                var scheduler = new FakeScheduler();
+                var coordinator = new OptimizationRequestCoordinator(scheduler.Schedule);
+                var preparations = 0;
+                var executions = 0;
+                var accepted = 0;
+                var errors = new List<Exception>();
+                var threads = new Thread[threadCount];
+
+                using (var barrier = new Barrier(threadCount))
+                using (var completed = new CountdownEvent(threadCount))
+                {
+                    try
+                    {
+                        for (var index = 0; index < threadCount; index++)
+                        {
+                            threads[index] = new Thread(() =>
+                            {
+                                try
+                                {
+                                    if (!barrier.SignalAndWait(ThreadTimeoutMilliseconds))
+                                        throw new InvalidOperationException("Concurrent request barrier timed out.");
+
+                                    if (coordinator.TryQueue(() => Interlocked.Increment(ref preparations), () => Interlocked.Increment(ref executions)))
+                                        Interlocked.Increment(ref accepted);
+                                }
+                                catch (Exception e)
+                                {
+                                    lock (errors)
+                                        errors.Add(e);
+                                }
+                                finally
+                                {
+                                    completed.Signal();
+                                }
+                            });
+                            threads[index].Start();
+                        }
+
+                        Assert.IsTrue(completed.Wait(ThreadTimeoutMilliseconds));
+                    }
+                    finally
+                    {
+                        for (var index = 0; index < threadCount; index++)
+                        {
+                            if (threads[index] != null)
+                                Assert.IsTrue(threads[index].Join(ThreadTimeoutMilliseconds));
+                        }
+                    }
+                }
+
+                Assert.AreEqual(0, errors.Count);
+                Assert.AreEqual(1, accepted);
+                Assert.AreEqual(1, scheduler.ScheduleCount);
+                Assert.AreEqual(1, preparations);
+                Assert.AreEqual(0, executions);
+                Assert.AreEqual(1, scheduler.PendingCount);
+
+                scheduler.ExecuteNext();
+                Assert.IsTrue(coordinator.TryQueue(() => Interlocked.Increment(ref preparations), () => Interlocked.Increment(ref executions)));
+                Assert.AreEqual(2, scheduler.ScheduleCount);
+                Assert.AreEqual(2, preparations);
+                Assert.AreEqual(1, executions);
+                Assert.AreEqual(1, scheduler.PendingCount);
+            }
+
+            private sealed class FakeScheduler
+            {
+                private readonly object _syncRoot = new object();
+                private readonly List<Action> _callbacks = new List<Action>();
+                private int _scheduleCount;
+
+                public bool AcceptsRequests { get; set; }
+                public Exception ExceptionToThrow { get; set; }
+
+                public FakeScheduler()
+                {
+                    AcceptsRequests = true;
+                }
+
+                public int PendingCount
+                {
+                    get
+                    {
+                        lock (_syncRoot)
+                            return _callbacks.Count;
+                    }
+                }
+
+                public int ScheduleCount
+                {
+                    get
+                    {
+                        lock (_syncRoot)
+                            return _scheduleCount;
+                    }
+                }
+
+                public bool Schedule(Action callback)
+                {
+                    lock (_syncRoot)
+                    {
+                        _scheduleCount++;
+                        if (ExceptionToThrow != null)
+                            throw ExceptionToThrow;
+                        if (!AcceptsRequests)
+                            return false;
+
+                        _callbacks.Add(callback);
+                        return true;
+                    }
+                }
+
+                public void ExecuteNext()
+                {
+                    Action callback;
+                    lock (_syncRoot)
+                    {
+                        callback = _callbacks[0];
+                        _callbacks.RemoveAt(0);
+                    }
+                    callback();
+                }
+            }
+        }
 
         #region Helper Classes
 

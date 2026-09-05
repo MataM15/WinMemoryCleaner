@@ -31,6 +31,7 @@ namespace WinMemoryCleaner
         private DateTimeOffset _lastAutoOptimizationByInterval = DateTimeOffset.Now;
         private DateTimeOffset _lastAutoOptimizationByMemoryUsage = DateTimeOffset.Now;
         private readonly object _lockObject = new object();
+        private readonly OptimizationRequestCoordinator _optimizationRequestCoordinator = new OptimizationRequestCoordinator();
         private byte _optimizationProgressPercentage;
         private string _optimizationProgressStep = Localizer.String.Optimize;
         private byte _optimizationProgressTotal = byte.MaxValue;
@@ -1838,11 +1839,14 @@ namespace WinMemoryCleaner
                 if (IsOptimizationRunning)
                     return;
 
-                OptimizationProgressStep = Localizer.String.Optimize;
-                OptimizationProgressValue = 0;
-                OptimizationProgressTotal = (byte)(new BitArray(new[] { (int)Settings.MemoryAreas }).OfType<bool>().Count(x => x) + 1);
-
-                ThreadPool.QueueUserWorkItem(_ => Optimize(reason));
+                _optimizationRequestCoordinator.TryQueue(
+                    () =>
+                    {
+                        OptimizationProgressStep = Localizer.String.Optimize;
+                        OptimizationProgressValue = 0;
+                        OptimizationProgressTotal = (byte)(new BitArray(new[] { (int)Settings.MemoryAreas }).OfType<bool>().Count(x => x) + 1);
+                    },
+                    () => Optimize(reason));
             }
             catch (Exception e)
             {
