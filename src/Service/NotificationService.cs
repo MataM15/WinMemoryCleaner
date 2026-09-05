@@ -659,6 +659,17 @@ namespace WinMemoryCleaner
             if (memory == null)
                 throw new ArgumentNullException("memory");
 
+            var dispatcher = EffectiveDispatcher;
+            if (dispatcher != null && !dispatcher.CheckAccess())
+            {
+                // Dispatch before taking the lock also used by the UI animation timer.
+                dispatcher.Invoke((Action)delegate
+                {
+                    Update(memory, isOptimizing);
+                });
+                return;
+            }
+
             lock (_disposeLock)
             {
                 if (_disposed || _notifyIcon == null)
