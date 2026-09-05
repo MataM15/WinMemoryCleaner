@@ -105,7 +105,9 @@ function Invoke-PolicyFixture {
         }
 
         foreach ($testCase in $actualFailures) {
-            $message = [string]$testCase.failure.message
+            $messageNode = $testCase.SelectSingleNode('failure/message')
+            if ($null -eq $messageNode) { throw "Mutation failure lacks an assertion message: $($testCase.name)." }
+            $message = $messageNode.InnerText
             foreach ($expectedMessage in $expectedMutationFailures[$testCase.name]) {
                 if ($message -notmatch $expectedMessage) {
                     throw "Mutation failure message for $($testCase.name) did not contain '$expectedMessage'."
@@ -159,6 +161,7 @@ finally {
         throw 'Auto optimization policy source hash did not match after restoration.'
     }
 
+    Write-Host "Policy source restored: SHA256 $restoredHash"
     Invoke-CiBuild 'Restored'
     Invoke-PolicyFixture $restoredResultsPath $false
 }
