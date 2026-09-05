@@ -144,7 +144,7 @@ jobs:
     name: Opt-in own-process ReleaseMemory benchmark
     needs: internal-memory-validation
     if: >-
-      ${{ github.repository == 'MataM15/WinMemoryCleaner' && github.ref == 'refs/heads/test/internal-memory-improvements' && ((github.event_name == 'workflow_dispatch' && inputs.run_benchmark) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[benchmark]')) }}
+      ${{ github.repository == 'MataM15/WinMemoryCleaner' && github.ref == 'refs/heads/test/internal-memory-improvements' && ((github.event_name == 'workflow_dispatch' && inputs.run_benchmark) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[benchmark]'))) }}
     runs-on: windows-2022
     timeout-minutes: 20
 
