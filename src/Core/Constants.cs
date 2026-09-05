@@ -164,6 +164,7 @@ namespace WinMemoryCleaner
             public static class NtStatus
             {
                 public const int StatusAccessDenied = unchecked((int)0xC0000022);
+                public const int StatusInvalidParameter = unchecked((int)0xC000000D);
             }
 
             public static class SystemInformationClass

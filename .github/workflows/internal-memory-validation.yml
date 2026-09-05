@@ -52,7 +52,12 @@ jobs:
           $fixture = 'WinMemoryCleaner.NativeMemoryTests.NativeMemoryInteropTests'
           $expectedTests = @(
             "$fixture.CreateNtStatusException_WhenStatusIsAccessDenied_MapsToWin32AccessDenied",
-            "$fixture.IsAdjustTokenPrivilegesSuccessful_WhenNotAllPrivilegesAreAssigned_ReturnsFalse"
+            "$fixture.CreateNtStatusException_WhenStatusIsInvalidParameter_MapsWithoutStaleWin32Error",
+            "$fixture.IsAdjustTokenPrivilegesSuccessful_WhenNativeCallAndLastErrorSucceed_ReturnsTrue",
+            "$fixture.IsAdjustTokenPrivilegesSuccessful_WhenNotAllPrivilegesAreAssigned_ReturnsFalse",
+            "$fixture.IsAdjustTokenPrivilegesSuccessful_WhenNativeCallSucceedsWithError_ReturnsFalse",
+            "$fixture.IsAdjustTokenPrivilegesSuccessful_WhenNativeCallFailsWithSuccessError_ReturnsFalse",
+            "$fixture.IsAdjustTokenPrivilegesSuccessful_WhenNativeCallFailsWithError_ReturnsFalse"
           )
 
           if (-not (Test-Path $testRunner)) {
