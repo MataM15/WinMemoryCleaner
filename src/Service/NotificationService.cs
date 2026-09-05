@@ -25,6 +25,7 @@ namespace WinMemoryCleaner
         private readonly Icon _imageIcon;
         private readonly NotifyIcon _notifyIcon;
         private readonly object _disposeLock = new object();
+        private readonly Dispatcher _dispatcher;
         private DispatcherTimer _rotationTimer;
 
         #endregion
@@ -36,12 +37,36 @@ namespace WinMemoryCleaner
         /// </summary>
         /// <param name="notifyIcon">Notify Icon</param>
         public NotificationService(NotifyIcon notifyIcon)
+            : this(notifyIcon, null, true)
+        {
+        }
+
+        /// <summary>
+        /// Initializes a notification service with optional test-specific initialization behavior.
+        /// </summary>
+        /// <param name="notifyIcon">Notify Icon</param>
+        /// <param name="dispatcher">Dispatcher used for rotation animation</param>
+        /// <param name="initialize">Whether to initialize the visible tray icon</param>
+        internal NotificationService(NotifyIcon notifyIcon, Dispatcher dispatcher, bool initialize)
         {
             _currentRotationAngle = 0;
             _imageIcon = Icon.ExtractAssociatedIcon(Assembly.GetExecutingAssembly().Location);
             _notifyIcon = notifyIcon;
+            _dispatcher = dispatcher;
 
-            Initialize();
+            if (initialize)
+                Initialize();
+        }
+
+        /// <summary>
+        /// Gets the dispatcher used for rotation animation.
+        /// </summary>
+        private Dispatcher EffectiveDispatcher
+        {
+            get
+            {
+                return _dispatcher ?? (WpfApplication.Current == null ? null : WpfApplication.Current.Dispatcher);
+            }
         }
 
         /// <summary>
@@ -567,12 +592,13 @@ namespace WinMemoryCleaner
             if (_rotationTimer != null)
                 return;
 
-            if (WpfApplication.Current == null || WpfApplication.Current.Dispatcher == null)
+            var dispatcher = EffectiveDispatcher;
+            if (dispatcher == null)
                 return;
 
             try
             {
-                WpfApplication.Current.Dispatcher.Invoke((Action)delegate
+                dispatcher.Invoke((Action)delegate
                 {
                     try
                     {
@@ -604,13 +630,14 @@ namespace WinMemoryCleaner
 
             try
             {
-                if (WpfApplication.Current == null || WpfApplication.Current.Dispatcher == null)
+                var dispatcher = EffectiveDispatcher;
+                if (dispatcher == null)
                 {
                     CleanupRotationTimer();
                     return;
                 }
 
-                WpfApplication.Current.Dispatcher.Invoke((Action)delegate
+                dispatcher.Invoke((Action)delegate
                 {
                     CleanupRotationTimer();
                 });

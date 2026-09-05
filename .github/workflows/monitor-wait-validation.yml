@@ -45,6 +45,43 @@ jobs:
         shell: pwsh
         run: msbuild src\WinMemoryCleaner.sln /m /p:Configuration=Release /p:Platform="Any CPU" /p:CI=true
 
+      - name: Run NotificationService dispatcher deadlock regression test
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fixture = 'WinMemoryCleaner.Test.ServiceTests+NotificationServiceDispatcherTests'
+          $testAssembly = 'src\bin\Release\WinMemoryCleaner.exe'
+          $testRunner = 'src\packages\NUnit.Runners.2.6.4\tools\nunit-console.exe'
+          $resultsPath = 'notification-dispatcher-results.xml'
+          $expectedTest = "$fixture.UiTimerCanAcquireLockWhileOptimizationStopsAnimation"
+
+          if (-not (Test-Path $testRunner)) {
+            throw "NUnit runner was not restored at $testRunner"
+          }
+
+          & $testRunner $testAssembly "/fixture:$fixture" "/xml:$resultsPath"
+          $testExitCode = $LASTEXITCODE
+
+          if (-not (Test-Path $resultsPath)) {
+            throw "NUnit did not write $resultsPath"
+          }
+
+          [xml]$results = Get-Content -Raw $resultsPath
+          $testCases = @($results.SelectNodes('//test-case'))
+          if ($testCases.Count -ne 1) {
+            throw "Expected exactly 1 focused test case, found $($testCases.Count)"
+          }
+          if ($testCases[0].name -ne $expectedTest) {
+            throw "NUnit XML did not contain the expected test case: $expectedTest"
+          }
+          if ($testCases[0].executed -ne 'True' -or $testCases[0].result -ne 'Success' -or $testCases[0].success -ne 'True') {
+            throw "Focused NUnit XML contains a non-passing test: $($testCases[0].name)"
+          }
+
+          if ($testExitCode -ne 0) {
+            exit $testExitCode
+          }
+
       - name: Run focused monitor wait tests
         shell: pwsh
         run: |
@@ -361,6 +398,7 @@ jobs:
         with:
           name: monitor-wait-results-${{ github.run_number }}
           path: |
+            notification-dispatcher-results.xml
             monitor-wait-results.xml
             monitor-wait-mutation-results.xml
             security-policy-results.xml

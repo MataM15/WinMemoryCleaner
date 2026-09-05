@@ -1,7 +1,10 @@
 using NUnit.Framework;
 using System;
+using System.Reflection;
+using System.Threading;
 using System.Windows.Forms;
 using System.Windows.Input;
+using System.Windows.Threading;
 
 #pragma warning disable CS1591 // Missing XML comment for publicly visible type or member
 
@@ -349,6 +352,227 @@ namespace WinMemoryCleaner.Test
         }
 
         #endregion
+
+        [TestFixture]
+        public sealed class NotificationServiceDispatcherTests
+        {
+            [Test]
+            public void UiTimerCanAcquireLockWhileOptimizationStopsAnimation()
+            {
+                var originalTrayIconShowMemoryUsage = Settings.TrayIconShowMemoryUsage;
+                Dispatcher dispatcher = null;
+                NotificationService service = null;
+                Thread dispatcherThread = null;
+                Thread worker = null;
+                object disposeLock = null;
+                DispatcherHookEventHandler operationPostedHandler = null;
+                Exception initializationException = null;
+                Exception dispatcherException = null;
+                Exception probeException = null;
+                Exception workerException = null;
+                Exception orchestrationException = null;
+                Exception unsubscribeException = null;
+                Exception shutdownException = null;
+                Exception settingsException = null;
+                bool dispatcherReadyObserved = false;
+                bool probeEnteredObserved = false;
+                bool workerOperationPostedObserved = false;
+                bool probeCompletedObserved = false;
+                bool probeSawWorkerOperation = false;
+                bool workerJoined = true;
+                bool dispatcherJoined = true;
+                bool probeAcquired = false;
+
+                using (var dispatcherReady = new ManualResetEvent(false))
+                using (var probeEntered = new ManualResetEvent(false))
+                using (var workerOperationPosted = new ManualResetEvent(false))
+                using (var probeCompleted = new ManualResetEvent(false))
+                {
+                    try
+                    {
+                        Settings.TrayIconShowMemoryUsage = false;
+                        dispatcherThread = new Thread(delegate
+                        {
+                            var initialized = false;
+
+                            try
+                            {
+                                dispatcher = Dispatcher.CurrentDispatcher;
+                                using (var notifyIcon = new NotifyIcon())
+                                using (var notificationService = new NotificationService(notifyIcon, dispatcher, false))
+                                {
+                                    service = notificationService;
+                                    notificationService.Update(new Memory(), true);
+                                    initialized = true;
+                                    dispatcherReady.Set();
+                                    Dispatcher.Run();
+                                }
+                            }
+                            catch (Exception ex)
+                            {
+                                if (initialized)
+                                    dispatcherException = ex;
+                                else
+                                    initializationException = ex;
+                            }
+                            finally
+                            {
+                                dispatcherReady.Set();
+                            }
+                        });
+                        dispatcherThread.IsBackground = true;
+                        dispatcherThread.SetApartmentState(ApartmentState.STA);
+                        dispatcherThread.Start();
+
+                        dispatcherReadyObserved = dispatcherReady.WaitOne(2000);
+                        if (dispatcherReadyObserved && dispatcher != null && initializationException == null && service != null)
+                        {
+                            var disposeLockField = typeof(NotificationService).GetField("_disposeLock", BindingFlags.Instance | BindingFlags.NonPublic);
+                            disposeLock = disposeLockField == null ? null : disposeLockField.GetValue(service);
+                            operationPostedHandler = delegate(object sender, DispatcherHookEventArgs args)
+                            {
+                                if (Thread.CurrentThread == worker)
+                                    workerOperationPosted.Set();
+                            };
+                            dispatcher.Hooks.OperationPosted += operationPostedHandler;
+
+                            dispatcher.BeginInvoke((Action)delegate
+                            {
+                                try
+                                {
+                                    probeEntered.Set();
+                                    probeSawWorkerOperation = workerOperationPosted.WaitOne(2000);
+                                    if (disposeLock != null)
+                                    {
+                                        var lockTaken = false;
+                                        try
+                                        {
+                                            lockTaken = Monitor.TryEnter(disposeLock, 500);
+                                            probeAcquired = lockTaken;
+                                        }
+                                        finally
+                                        {
+                                            if (lockTaken)
+                                                Monitor.Exit(disposeLock);
+                                        }
+                                    }
+                                }
+                                catch (Exception ex)
+                                {
+                                    probeException = ex;
+                                }
+                                finally
+                                {
+                                    probeCompleted.Set();
+                                }
+                            });
+
+                            probeEnteredObserved = probeEntered.WaitOne(2000);
+                            if (probeEnteredObserved)
+                            {
+                                worker = new Thread(delegate
+                                {
+                                    try
+                                    {
+                                        service.Update(new Memory(), false);
+                                    }
+                                    catch (Exception ex)
+                                    {
+                                        workerException = ex;
+                                    }
+                                });
+                                worker.IsBackground = true;
+                                worker.Start();
+                                workerOperationPostedObserved = workerOperationPosted.WaitOne(2500);
+                                probeCompletedObserved = probeCompleted.WaitOne(2500);
+                                workerJoined = worker.Join(2500);
+                            }
+                        }
+                    }
+                    catch (Exception ex)
+                    {
+                        orchestrationException = ex;
+                    }
+                    finally
+                    {
+                        if (dispatcher != null && operationPostedHandler != null)
+                        {
+                            try
+                            {
+                                dispatcher.Hooks.OperationPosted -= operationPostedHandler;
+                            }
+                            catch (Exception ex)
+                            {
+                                unsubscribeException = ex;
+                            }
+                        }
+
+                        if (worker != null && !workerJoined)
+                        {
+                            try
+                            {
+                                workerJoined = worker.Join(2500);
+                            }
+                            catch (Exception ex)
+                            {
+                                orchestrationException = ex;
+                            }
+                        }
+
+                        if (dispatcher != null)
+                        {
+                            try
+                            {
+                                dispatcher.BeginInvokeShutdown(DispatcherPriority.Normal);
+                            }
+                            catch (Exception ex)
+                            {
+                                shutdownException = ex;
+                            }
+                        }
+
+                        if (dispatcherThread != null)
+                        {
+                            try
+                            {
+                                dispatcherJoined = dispatcherThread.Join(2500);
+                            }
+                            catch (Exception ex)
+                            {
+                                orchestrationException = ex;
+                            }
+                        }
+
+                        try
+                        {
+                            Settings.TrayIconShowMemoryUsage = originalTrayIconShowMemoryUsage;
+                        }
+                        catch (Exception ex)
+                        {
+                            settingsException = ex;
+                        }
+                    }
+                }
+
+                Assert.IsNull(orchestrationException, "The test orchestration threw an exception.");
+                Assert.IsNull(initializationException, "The service setup threw an exception.");
+                Assert.IsNull(dispatcherException, "The dispatcher thread threw an exception.");
+                Assert.IsTrue(dispatcherReadyObserved, "The dispatcher did not start within the bounded wait.");
+                Assert.IsNotNull(disposeLock, "NotificationService._disposeLock must remain available for this lock-interleaving test.");
+                Assert.IsTrue(probeEnteredObserved, "The UI probe did not enter the dispatcher within the bounded wait.");
+                Assert.IsTrue(workerOperationPostedObserved, "The worker did not post its synchronous dispatcher operation.");
+                Assert.IsTrue(probeSawWorkerOperation, "The UI probe did not observe the worker dispatcher operation.");
+                Assert.IsTrue(probeCompletedObserved, "The UI probe did not complete within the bounded wait.");
+                Assert.IsTrue(workerJoined, "The worker did not complete after the UI probe returned.");
+                Assert.IsNull(workerException, "The worker threw an exception.");
+                Assert.IsNull(probeException, "The UI probe threw an exception.");
+                Assert.IsNull(unsubscribeException, "Dispatcher hook cleanup threw an exception.");
+                Assert.IsNull(shutdownException, "Dispatcher shutdown threw an exception.");
+                Assert.IsTrue(dispatcherJoined, "The dispatcher thread did not stop within the bounded wait.");
+                Assert.IsNull(settingsException, "The tray icon setting was not restored.");
+                Assert.IsTrue(probeAcquired, "The UI timer must be able to acquire NotificationService._disposeLock while the worker waits for the dispatcher.");
+            }
+        }
     }
 }
 
