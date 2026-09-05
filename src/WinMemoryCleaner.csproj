@@ -165,6 +165,7 @@
     <Compile Include="Test\Mocker.cs" />
     <Compile Include="Test\ModelTests.cs" />
     <Compile Include="Test\ServiceTests.cs" />
+    <Compile Include="Test\SecurityPolicyTests.cs" />
     <Compile Include="Test\TestCleanup.cs" />
     <Compile Include="Test\ViewModelTests.cs" />
     <Compile Include="View\Base\View.cs" />

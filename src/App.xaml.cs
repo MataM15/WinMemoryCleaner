@@ -292,16 +292,6 @@ namespace WinMemoryCleaner
         private void OnProcessExit(object sender, EventArgs e)
         {
             Dispose();
-
-            try
-            {
-                if (Updater.Process != null)
-                    Process.Start(Updater.Process);
-            }
-            catch (Exception ex)
-            {
-                Logger.Error("Error starting update process." + ex);
-            }
         }
 
         /// <summary>
@@ -403,8 +393,7 @@ namespace WinMemoryCleaner
 
                 if (commandLineArguments != null)
                 {
-                    // Update to the latest version
-                    Updater.Update(commandLineArguments);
+
 
                     // Process command‑line arguments
                     foreach (var argument in commandLineArguments.Select(arg => arg.Replace("/", string.Empty)))

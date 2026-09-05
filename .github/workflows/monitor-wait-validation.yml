@@ -93,6 +93,113 @@ jobs:
             exit $testExitCode
           }
 
+      - name: Run focused security policy tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fixture = 'WinMemoryCleaner.Test.SecurityPolicyTests'
+          $testAssembly = 'src\bin\Release\WinMemoryCleaner.exe'
+          $testRunner = 'src\packages\NUnit.Runners.2.6.4\tools\nunit-console.exe'
+          $resultsPath = 'security-policy-results.xml'
+          $expectedTests = @(
+            "$fixture.AutoUpdate_IsBlocked_WhenStoredPreferenceIsEnabled",
+            "$fixture.AutoUpdate_IsBlocked_WhenStoredPreferenceIsDisabled"
+          )
+
+          if (-not (Test-Path $testRunner)) {
+            throw "NUnit runner was not restored at $testRunner"
+          }
+
+          & $testRunner $testAssembly "/fixture:$fixture" "/xml:$resultsPath"
+          $testExitCode = $LASTEXITCODE
+
+          if (-not (Test-Path $resultsPath)) {
+            throw "NUnit did not write $resultsPath"
+          }
+
+          [xml]$results = Get-Content -Raw $resultsPath
+          $testCases = @($results.SelectNodes('//test-case'))
+          if ($testCases.Count -ne 2) {
+            throw "Expected exactly 2 focused test cases, found $($testCases.Count)"
+          }
+
+          $actualNames = @($testCases | ForEach-Object { $_.name })
+          if (@(Compare-Object -ReferenceObject $expectedTests -DifferenceObject $actualNames).Count -ne 0) {
+            throw 'NUnit XML did not contain exactly the expected security policy test cases'
+          }
+
+          $nonPassingCases = @($testCases | Where-Object {
+            $_.executed -ne 'True' -or $_.result -ne 'Success' -or $_.success -ne 'True'
+          })
+          if ($nonPassingCases.Count -ne 0) {
+            throw "Focused NUnit XML contains non-passing tests: $($nonPassingCases.name -join ', ')"
+          }
+
+          if ($testExitCode -ne 0) {
+            exit $testExitCode
+          }
+
+      - name: Stage experimental Windows artifact from green build
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $stageRoot = Join-Path $env:RUNNER_TEMP "winmemorycleaner-test-$env:GITHUB_SHA"
+          $payloadFiles = @(
+            [pscustomobject]@{ Source = 'src\bin\Release\WinMemoryCleaner.exe'; Destination = 'WinMemoryCleaner.exe'; Required = $true }
+            [pscustomobject]@{ Source = 'src\bin\Release\nunit.framework.dll'; Destination = 'nunit.framework.dll'; Required = $true }
+            [pscustomobject]@{ Source = 'src\bin\Release\WinMemoryCleaner.exe.config'; Destination = 'WinMemoryCleaner.exe.config'; Required = $false }
+            [pscustomobject]@{ Source = 'LICENSE'; Destination = 'LICENSE'; Required = $true }
+          )
+          $requiredPayload = @('WinMemoryCleaner.exe', 'nunit.framework.dll', 'LICENSE', 'BUILD-INFO.txt')
+          $allowedPayload = @('WinMemoryCleaner.exe', 'nunit.framework.dll', 'WinMemoryCleaner.exe.config', 'LICENSE', 'BUILD-INFO.txt', 'SHA256SUMS.txt')
+
+          if (Test-Path -LiteralPath $stageRoot) {
+            throw "Refusing to reuse existing artifact staging directory: $stageRoot"
+          }
+          New-Item -ItemType Directory -Path $stageRoot -ErrorAction Stop | Out-Null
+
+          foreach ($payloadFile in $payloadFiles) {
+            if ($payloadFile.Destination -ne [System.IO.Path]::GetFileName($payloadFile.Destination)) {
+              throw "Artifact destination must be a file name: $($payloadFile.Destination)"
+            }
+            if (-not (Test-Path -LiteralPath $payloadFile.Source -PathType Leaf)) {
+              if ($payloadFile.Required) {
+                throw "Required artifact file was not produced by the green build: $($payloadFile.Source)"
+              }
+              continue
+            }
+            Copy-Item -LiteralPath $payloadFile.Source -Destination (Join-Path $stageRoot $payloadFile.Destination) -ErrorAction Stop
+          }
+
+          $buildInfo = @"
+          WinMemoryCleaner experimental CI build
+          Repository: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY
+          Commit: $env:GITHUB_SHA
+          Source: $env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/tree/$env:GITHUB_SHA
+
+          This is an experimental, unofficial build. No Authenticode signature is expected.
+          Launch: On Windows with .NET Framework 4.0 or later, run WinMemoryCleaner.exe.
+          "@
+          $buildInfo = $buildInfo.Trim() + [Environment]::NewLine
+          [System.IO.File]::WriteAllText((Join-Path $stageRoot 'BUILD-INFO.txt'), $buildInfo, [System.Text.UTF8Encoding]::new($false))
+
+          $missingPayload = @($requiredPayload | Where-Object { -not (Test-Path -LiteralPath (Join-Path $stageRoot $_) -PathType Leaf) })
+          if ($missingPayload.Count -ne 0) {
+            throw "Artifact staging is missing required files: $($missingPayload -join ', ')"
+          }
+          $unexpectedPayload = @(Get-ChildItem -LiteralPath $stageRoot -File | Where-Object { $_.Name -notin $allowedPayload })
+          if ($unexpectedPayload.Count -ne 0) {
+            throw "Artifact staging contains unexpected files: $($unexpectedPayload.Name -join ', ')"
+          }
+
+          $checksumLines = @(Get-ChildItem -LiteralPath $stageRoot -File |
+            Sort-Object Name |
+            Get-FileHash -Algorithm SHA256 |
+            ForEach-Object { "{0} *{1}" -f $_.Hash.ToLowerInvariant(), $_.Name })
+          [System.IO.File]::WriteAllLines((Join-Path $stageRoot 'SHA256SUMS.txt'), $checksumLines, [System.Text.UTF8Encoding]::new($false))
+
+          Get-ChildItem -LiteralPath $stageRoot -File | ForEach-Object { $_.IsReadOnly = $true }
+
       - name: Check mutation sensitivity after green validation
         shell: pwsh
         run: |
@@ -187,6 +294,14 @@ jobs:
             throw $mutationFailure
           }
 
+      - name: Upload experimental Windows artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: winmemorycleaner-test-${{ github.sha }}
+          path: ${{ runner.temp }}\winmemorycleaner-test-${{ github.sha }}
+          if-no-files-found: error
+          retention-days: 7
+
       - name: Upload focused NUnit XML
         if: always()
         uses: actions/upload-artifact@v4
@@ -195,5 +310,6 @@ jobs:
           path: |
             monitor-wait-results.xml
             monitor-wait-mutation-results.xml
+            security-policy-results.xml
           if-no-files-found: warn
           retention-days: 7

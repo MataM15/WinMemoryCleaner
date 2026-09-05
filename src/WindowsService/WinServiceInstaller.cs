@@ -3,7 +3,6 @@ using System.Collections;
 using System.ComponentModel;
 using System.Configuration.Install;
 using System.Diagnostics;
-using System.Linq;
 using System.Reflection;
 using System.ServiceProcess;
 
@@ -110,22 +109,6 @@ namespace WinMemoryCleaner
         {
             if (WinService.IsInstalled)
             {
-                // Processess that blocks service refresh/uninstallation
-                var processesToKill = new[] { "mmc", "procexp", "procexp64", "taskmgr" };
-                var processes = Process.GetProcesses().Where(process => process != null && processesToKill.Contains(process.ProcessName, StringComparer.OrdinalIgnoreCase));
-
-                foreach (var process in processes)
-                {
-                    try
-                    {
-                        process.Kill();
-                    }
-                    catch
-                    {
-                        // ignored
-                    }
-                }
-
                 ManagedInstallerClass.InstallHelper(new[]
                 {
                     "/Uninstall",
@@ -135,7 +118,7 @@ namespace WinMemoryCleaner
                 });
 
                 // Kill any remaining process
-                processes = Process.GetProcessesByName(Constants.App.Name);
+                var processes = Process.GetProcessesByName(Constants.App.Name);
 
                 foreach (var process in processes)
                 {
