@@ -1,0 +1,98 @@
+name: Internal Memory Validation
+
+on:
+  push:
+    branches:
+      - test/internal-memory-improvements
+    paths:
+      - 'src/Core/Constants.cs'
+      - 'src/Interop/NativeMethods.cs'
+      - 'src/Service/ComputerService.cs'
+      - 'src/Test/NativeMemoryInteropTests.cs'
+      - 'src/WinMemoryCleaner.csproj'
+      - '.github/workflows/internal-memory-validation.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  internal-memory-validation:
+    name: Focused native memory regression validation
+    runs-on: windows-2022
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup NuGet
+        uses: nuget/setup-nuget@v2
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Restore locked NuGet packages
+        shell: pwsh
+        run: nuget restore src\WinMemoryCleaner.sln -LockedMode
+
+      - name: Build release solution without host mutation
+        shell: pwsh
+        run: msbuild src\WinMemoryCleaner.sln /m /p:Configuration=Release /p:Platform="Any CPU" /p:IsCI=true "/p:RestartFlag=$env:GITHUB_WORKSPACE\ci-restart-required.flag"
+
+      - name: Run explicit safe native fixture allowlist
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $testAssembly = 'src\bin\Release\WinMemoryCleaner.exe'
+          $testRunner = 'src\packages\NUnit.Runners.2.6.4\tools\nunit-console.exe'
+          $resultsPath = 'native-memory-results.xml'
+          $fixture = 'WinMemoryCleaner.NativeMemoryTests.NativeMemoryInteropTests'
+          $expectedTests = @(
+            "$fixture.CreateNtStatusException_WhenStatusIsAccessDenied_MapsToWin32AccessDenied",
+            "$fixture.IsAdjustTokenPrivilegesSuccessful_WhenNotAllPrivilegesAreAssigned_ReturnsFalse"
+          )
+
+          if (-not (Test-Path $testRunner)) {
+            throw "NUnit runner was not restored at $testRunner"
+          }
+
+          & $testRunner $testAssembly "/fixture:$fixture" "/xml:$resultsPath"
+          $testExitCode = $LASTEXITCODE
+
+          if (-not (Test-Path $resultsPath)) {
+            throw "NUnit did not write $resultsPath"
+          }
+
+          [xml]$results = Get-Content -Raw $resultsPath
+          $testCases = @($results.SelectNodes('//test-case'))
+          if ($testCases.Count -ne $expectedTests.Count) {
+            throw "Expected $($expectedTests.Count) safe native test cases, found $($testCases.Count)"
+          }
+
+          $actualNames = @($testCases | ForEach-Object { $_.name })
+          if (@(Compare-Object -ReferenceObject $expectedTests -DifferenceObject $actualNames).Count -ne 0) {
+            throw 'NUnit XML did not contain exactly the safe native fixture allowlist'
+          }
+
+          $nonPassingCases = @($testCases | Where-Object {
+            $_.executed -ne 'True' -or $_.result -ne 'Success' -or $_.success -ne 'True'
+          })
+          if ($nonPassingCases.Count -ne 0) {
+            throw "Safe native fixture contains non-passing tests: $($nonPassingCases.name -join ', ')"
+          }
+
+          if ($testExitCode -ne 0) {
+            exit $testExitCode
+          }
+
+      - name: Upload focused NUnit XML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-memory-results-${{ github.run_number }}
+          path: native-memory-results.xml
+          if-no-files-found: warn
+          retention-days: 7
