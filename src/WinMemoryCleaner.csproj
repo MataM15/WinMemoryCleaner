@@ -167,6 +167,7 @@
     <Compile Include="Test\Mocker.cs" />
     <Compile Include="Test\NativeMemoryInteropTests.cs" />
     <Compile Include="Test\ReleaseMemoryTests.cs" />
+    <Compile Include="Test\ReleaseMemoryBenchmarkTests.cs" />
     <Compile Include="Test\ModelTests.cs" />
     <Compile Include="Test\ServiceTests.cs" />
     <Compile Include="Test\SecurityPolicyTests.cs" />

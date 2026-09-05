@@ -587,17 +587,23 @@ namespace WinMemoryCleaner
         /// </summary>
         public static void ReleaseMemory()
         {
-            ReleaseMemory
-            (
-                ReleaseMemoryMode.Combined,
-                () =>
-                {
-                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced);
-                    GC.WaitForPendingFinalizers();
-                    GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced);
-                },
-                () => NativeMethods.EmptyWorkingSet(Process.GetCurrentProcess().Handle)
-            );
+            ReleaseMemory(ReleaseMemoryMode.Combined, CollectGarbageSequence, TrimOwnProcessWorkingSet);
+        }
+
+        internal static void CollectGarbageSequence()
+        {
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced);
+            GC.WaitForPendingFinalizers();
+            GC.Collect(GC.MaxGeneration, GCCollectionMode.Forced);
+        }
+
+        internal static void TrimOwnProcessWorkingSet()
+        {
+            using (var process = Process.GetCurrentProcess())
+            {
+                if (!NativeMethods.EmptyWorkingSet(process.Handle))
+                    throw new Win32Exception();
+            }
         }
 
         internal static void ReleaseMemory(ReleaseMemoryMode mode, Action collectGarbage, Action trimWorkingSet)

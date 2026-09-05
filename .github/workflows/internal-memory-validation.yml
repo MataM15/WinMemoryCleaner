@@ -12,9 +12,18 @@ on:
       - 'src/Service/ComputerService.cs'
       - 'src/Test/NativeMemoryInteropTests.cs'
       - 'src/Test/ReleaseMemoryTests.cs'
+      - 'src/Test/ReleaseMemoryBenchmarkTests.cs'
       - 'src/WinMemoryCleaner.csproj'
+      - '.github/scripts/measure-release-memory.ps1'
       - '.github/workflows/internal-memory-validation.yml'
+      - 'docs/release-memory-benchmark.md'
   workflow_dispatch:
+    inputs:
+      run_benchmark:
+        description: 'Run the disposable own-process ReleaseMemory benchmark'
+        required: false
+        default: false
+        type: boolean
 
 permissions:
   contents: read
@@ -24,6 +33,8 @@ jobs:
     name: Focused native memory regression validation
     runs-on: windows-2022
     timeout-minutes: 10
+    if: >-
+      ${{ github.repository == 'MataM15/WinMemoryCleaner' && github.ref == 'refs/heads/test/internal-memory-improvements' }}
 
     steps:
       - name: Checkout code
@@ -126,5 +137,53 @@ jobs:
           path: |
             native-memory-results.xml
             release-memory-results.xml
+          if-no-files-found: warn
+          retention-days: 7
+
+  release-memory-benchmark:
+    name: Opt-in own-process ReleaseMemory benchmark
+    needs: internal-memory-validation
+    if: >-
+      ${{ github.repository == 'MataM15/WinMemoryCleaner' && github.ref == 'refs/heads/test/internal-memory-improvements' && ((github.event_name == 'workflow_dispatch' && inputs.run_benchmark) || (github.event_name == 'push' && contains(github.event.head_commit.message, '[benchmark]')) }}
+    runs-on: windows-2022
+    timeout-minutes: 20
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup NuGet
+        uses: nuget/setup-nuget@v2
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Restore locked NuGet packages
+        shell: pwsh
+        run: nuget restore src\WinMemoryCleaner.sln -LockedMode
+
+      - name: Build release solution without host mutation
+        shell: pwsh
+        run: msbuild src\WinMemoryCleaner.sln /m /p:Configuration=Release /p:Platform="Any CPU" /p:IsCI=true "/p:RestartFlag=$env:GITHUB_WORKSPACE\ci-restart-required.flag"
+
+      - name: Run isolated release-memory benchmark
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\.github\scripts\measure-release-memory.ps1" `
+            -TestAssembly "$env:GITHUB_WORKSPACE\src\bin\Release\WinMemoryCleaner.exe" `
+            -TestRunner "$env:GITHUB_WORKSPACE\src\packages\NUnit.Runners.2.6.4\tools\nunit-console.exe" `
+            -OutputDirectory "$env:GITHUB_WORKSPACE\benchmark-output" `
+            -Blocks 3 `
+            -Samples 10 `
+            -Seed 20240517
+
+      - name: Upload release-memory benchmark artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-memory-benchmark-${{ github.run_number }}
+          path: benchmark-output
           if-no-files-found: warn
           retention-days: 7
