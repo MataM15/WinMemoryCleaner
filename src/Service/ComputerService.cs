@@ -136,6 +136,7 @@ namespace WinMemoryCleaner
             return result;
         }
 
+#pragma warning disable CA1801 // RED seams retain legacy behavior until the regressions are demonstrated.
         internal static Win32Exception CreateNtStatusException(int ntStatus, int lastWin32Error)
         {
             return new Win32Exception(lastWin32Error);
@@ -145,6 +146,7 @@ namespace WinMemoryCleaner
         {
             return privilegesAdjusted;
         }
+#pragma warning restore CA1801
 
         #endregion
 
