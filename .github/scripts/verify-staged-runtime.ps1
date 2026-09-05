@@ -195,7 +195,7 @@ function Get-DefenderResult([string]$Directory) {
     catch {
         $result.Status = 'Error'
         $prefix = if ($scanAttempted) { 'Defender scan, wait, or evidence query failed after scan attempt' } else { 'Defender scan could not be started' }
-        $result.Reason = "$prefix: $($_.Exception.Message)"
+        $result.Reason = "${prefix}: $($_.Exception.Message)"
     }
     finally {
         if ($job) {
