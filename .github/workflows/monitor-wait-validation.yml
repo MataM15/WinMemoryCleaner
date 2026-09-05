@@ -195,7 +195,7 @@ jobs:
           $checksumLines = @(Get-ChildItem -LiteralPath $stageRoot -File |
             Sort-Object Name |
             Get-FileHash -Algorithm SHA256 |
-            ForEach-Object { "{0} *{1}" -f $_.Hash.ToLowerInvariant(), $_.Name })
+            ForEach-Object { "{0} *{1}" -f $_.Hash.ToLowerInvariant(), [System.IO.Path]::GetFileName($_.Path) })
           [System.IO.File]::WriteAllLines((Join-Path $stageRoot 'SHA256SUMS.txt'), $checksumLines, [System.Text.UTF8Encoding]::new($false))
 
           Get-ChildItem -LiteralPath $stageRoot -File | ForEach-Object { $_.IsReadOnly = $true }
