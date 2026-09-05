@@ -391,7 +391,7 @@ namespace WinMemoryCleaner.Test
                     try
                     {
                         Settings.TrayIconShowMemoryUsage = false;
-                        dispatcherThread = new Thread(delegate
+                        dispatcherThread = new Thread(delegate()
                         {
                             var initialized = false;
 
@@ -470,7 +470,7 @@ namespace WinMemoryCleaner.Test
                             probeEnteredObserved = probeEntered.WaitOne(2000);
                             if (probeEnteredObserved)
                             {
-                                worker = new Thread(delegate
+                                worker = new Thread(delegate()
                                 {
                                     try
                                     {
