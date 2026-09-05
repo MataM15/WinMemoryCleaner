@@ -7,6 +7,7 @@ on:
     paths:
       - 'src/**'
       - '.github/workflows/monitor-wait-validation.yml'
+      - '.github/scripts/verify-staged-runtime.ps1'
 
 permissions:
   contents: read
@@ -311,5 +312,56 @@ jobs:
             monitor-wait-results.xml
             monitor-wait-mutation-results.xml
             security-policy-results.xml
+          if-no-files-found: warn
+          retention-days: 7
+
+  runtime-defender-validation:
+    name: Isolated staged runtime and Defender validation
+    needs: monitor-wait-validation
+    runs-on: windows-2022
+    timeout-minutes: 10
+
+    steps:
+      - name: Checkout validation script read-only
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Download the green staged artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: winmemorycleaner-test-${{ github.sha }}
+          path: ${{ runner.temp }}\winmemorycleaner-test-${{ github.sha }}
+
+      - name: Parse runtime validation script before launch
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $tokens = $null
+          $parseErrors = $null
+          $scriptPath = Join-Path $env:GITHUB_WORKSPACE '.github\scripts\verify-staged-runtime.ps1'
+          [void][System.Management.Automation.Language.Parser]::ParseFile($scriptPath, [ref]$tokens, [ref]$parseErrors)
+          if ($parseErrors.Count -ne 0) {
+            throw "Runtime validation script has PowerShell syntax errors: $($parseErrors | ForEach-Object { $_.Message } | Join-String -Separator '; ')"
+          }
+
+      - name: Validate staged runtime and local-only Defender scan
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $artifactDirectory = Join-Path $env:RUNNER_TEMP "winmemorycleaner-test-$env:GITHUB_SHA"
+          $reportDirectory = Join-Path $env:RUNNER_TEMP 'winmemorycleaner-runtime-evidence'
+          & .\.github\scripts\verify-staged-runtime.ps1 `
+            -ArtifactDirectory $artifactDirectory `
+            -ReportDirectory $reportDirectory `
+            -ExpectedCommit $env:GITHUB_SHA
+          exit $LASTEXITCODE
+
+      - name: Upload runtime and Defender evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: winmemorycleaner-runtime-evidence-${{ github.run_number }}
+          path: ${{ runner.temp }}\winmemorycleaner-runtime-evidence
           if-no-files-found: warn
           retention-days: 7
