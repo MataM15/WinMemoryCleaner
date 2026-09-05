@@ -128,7 +128,7 @@ namespace WinMemoryCleaner
 
             var bounds = WindowState == WindowState.Maximized
                     ? RestoreBounds
-                    : new Rect(ActualWidth, ActualHeight);
+                    : new Rect(0, 0, ActualWidth, ActualHeight);
 
                 if (bounds.Width <= 0 || bounds.Height <= 0)
                     return;
@@ -254,6 +254,9 @@ namespace WinMemoryCleaner
         /// <inheritdoc/>
         protected override void OnMouseLeftButtonDown(MouseButtonEventArgs e)
         {
+            if (e == null)
+                throw new ArgumentNullException("e");
+
             base.OnMouseLeftButtonDown(e);
 
             if (e.Handled || e.OriginalSource is ResizeGrip || e.Source is ResizeGrip)
