@@ -1,6 +1,8 @@
 using NUnit.Framework;
 using System;
+using System.Diagnostics;
 using System.Linq;
+using System.Threading;
 using System.Windows.Forms;
 
 #pragma warning disable CS1591 // Missing XML comment for publicly visible type or member
@@ -651,6 +653,131 @@ namespace WinMemoryCleaner.Test
             }
 
             #endregion
+        }
+
+        #endregion
+
+        #region MainViewModel Monitor Wait Tests
+
+        public sealed class MainViewModelMonitorWaitTests
+        {
+            [Test]
+            public void GetMonitorWaitMilliseconds_WhenBusy_UsesBoundedBackoffForBothMonitors()
+            {
+                var appMonitorWaitMilliseconds = MainViewModel.GetMonitorWaitMilliseconds(true, 60000);
+                var backgroundTaskMonitorWaitMilliseconds = MainViewModel.GetMonitorWaitMilliseconds(true, 5000);
+
+                Assert.AreEqual(100, appMonitorWaitMilliseconds);
+                Assert.Greater(appMonitorWaitMilliseconds, 0);
+                Assert.AreEqual(100, backgroundTaskMonitorWaitMilliseconds);
+                Assert.Greater(backgroundTaskMonitorWaitMilliseconds, 0);
+            }
+
+            [Test]
+            public void GetMonitorWaitMilliseconds_WhenNotBusy_PreservesNormalPollingIntervals()
+            {
+                Assert.AreEqual(60000, MainViewModel.GetMonitorWaitMilliseconds(false, 60000));
+                Assert.AreEqual(5000, MainViewModel.GetMonitorWaitMilliseconds(false, 5000));
+            }
+
+            [Test]
+            public void WaitForMonitor_WhenBusyAndNotCancelled_WaitsForBackoffAndReturnsFalse()
+            {
+                using (var cancellationTokenSource = new CancellationTokenSource())
+                {
+                    var stopwatch = Stopwatch.StartNew();
+                    var cancellationObserved = MainViewModel.WaitForMonitor(cancellationTokenSource.Token, true, 60000);
+                    stopwatch.Stop();
+
+                    Assert.IsFalse(cancellationObserved);
+                    Assert.GreaterOrEqual(stopwatch.ElapsedMilliseconds, 50);
+                }
+            }
+
+            [Test]
+            public void WaitForMonitor_WhenCancellationRequested_ReturnsWithoutWaiting()
+            {
+                using (var cancellationTokenSource = new CancellationTokenSource())
+                {
+                    cancellationTokenSource.Cancel();
+
+                    Assert.IsTrue(MainViewModel.WaitForMonitor(cancellationTokenSource.Token, true, 60000));
+                    Assert.IsTrue(MainViewModel.WaitForMonitor(cancellationTokenSource.Token, false, 5000));
+                }
+            }
+
+            [Test]
+            public void WaitForMonitor_WhenCancelledDuringNormalWait_ReturnsCancellation()
+            {
+                const int normalWaitMilliseconds = 5000;
+                const int synchronizationTimeoutMilliseconds = 1000;
+                const int cleanupTimeoutMilliseconds = normalWaitMilliseconds + synchronizationTimeoutMilliseconds;
+                var cancellationTokenSource = new CancellationTokenSource();
+                var waitEntered = new ManualResetEvent(false);
+                var workerCompleted = new ManualResetEvent(false);
+                Thread worker = null;
+                var cancellationObserved = 0;
+                var workerStopped = false;
+
+                try
+                {
+                    worker = new Thread(() =>
+                    {
+                        try
+                        {
+                            waitEntered.Set();
+                            if (MainViewModel.WaitForMonitor(cancellationTokenSource.Token, false, normalWaitMilliseconds))
+                                Interlocked.Exchange(ref cancellationObserved, 1);
+                        }
+                        finally
+                        {
+                            workerCompleted.Set();
+                        }
+                    });
+                    worker.Start();
+
+                    Assert.IsTrue(waitEntered.WaitOne(synchronizationTimeoutMilliseconds));
+
+                    var inFlightTimeout = Stopwatch.StartNew();
+                    while ((worker.ThreadState & System.Threading.ThreadState.WaitSleepJoin) == 0
+                        && inFlightTimeout.ElapsedMilliseconds < synchronizationTimeoutMilliseconds)
+                    {
+                        worker.Join(10);
+                    }
+                    inFlightTimeout.Stop();
+
+                    Assert.IsTrue((worker.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0,
+                        "The worker must be waiting normally before cancellation is requested.");
+
+                    cancellationTokenSource.Cancel();
+
+                    Assert.IsTrue(workerCompleted.WaitOne(synchronizationTimeoutMilliseconds));
+                    Assert.AreEqual(1, Interlocked.CompareExchange(ref cancellationObserved, 0, 0));
+                    workerStopped = worker.Join(synchronizationTimeoutMilliseconds);
+                    Assert.IsTrue(workerStopped);
+                }
+                finally
+                {
+                    cancellationTokenSource.Cancel();
+                    if (worker == null || !worker.IsAlive)
+                    {
+                        workerStopped = true;
+                    }
+                    else
+                    {
+                        workerStopped = worker.Join(cleanupTimeoutMilliseconds);
+                    }
+
+                    if (workerStopped)
+                    {
+                        waitEntered.Dispose();
+                        workerCompleted.Dispose();
+                        cancellationTokenSource.Dispose();
+                    }
+
+                    Assert.IsTrue(workerStopped, "The worker must stop before its synchronization resources are disposed.");
+                }
+            }
         }
 
         #endregion

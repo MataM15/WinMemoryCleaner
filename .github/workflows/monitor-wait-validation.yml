@@ -1,0 +1,199 @@
+name: Monitor Wait Validation
+
+on:
+  push:
+    branches:
+      - fix/busy-spin
+    paths:
+      - 'src/**'
+      - '.github/workflows/monitor-wait-validation.yml'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  CI: 'true'
+
+jobs:
+  monitor-wait-validation:
+    name: Focused monitor wait validation
+    runs-on: windows-2022
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+
+      - name: Setup NuGet
+        uses: nuget/setup-nuget@v2
+
+      - name: Setup MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Restore locked NuGet packages
+        shell: pwsh
+        run: nuget restore src\WinMemoryCleaner.sln -LockedMode
+
+      - name: Build release solution
+        shell: pwsh
+        run: msbuild src\WinMemoryCleaner.sln /m /p:Configuration=Release /p:Platform="Any CPU" /p:CI=true
+
+      - name: Run focused monitor wait tests
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fixture = 'WinMemoryCleaner.Test.ViewModelTests+MainViewModelMonitorWaitTests'
+          $testAssembly = 'src\bin\Release\WinMemoryCleaner.exe'
+          $testRunner = 'src\packages\NUnit.Runners.2.6.4\tools\nunit-console.exe'
+          $resultsPath = 'monitor-wait-results.xml'
+          $expectedTests = @(
+            "$fixture.GetMonitorWaitMilliseconds_WhenBusy_UsesBoundedBackoffForBothMonitors",
+            "$fixture.GetMonitorWaitMilliseconds_WhenNotBusy_PreservesNormalPollingIntervals",
+            "$fixture.WaitForMonitor_WhenBusyAndNotCancelled_WaitsForBackoffAndReturnsFalse",
+            "$fixture.WaitForMonitor_WhenCancellationRequested_ReturnsWithoutWaiting",
+            "$fixture.WaitForMonitor_WhenCancelledDuringNormalWait_ReturnsCancellation"
+          )
+
+          if (-not (Test-Path $testRunner)) {
+            throw "NUnit runner was not restored at $testRunner"
+          }
+
+          & $testRunner $testAssembly "/fixture:$fixture" "/xml:$resultsPath"
+          $testExitCode = $LASTEXITCODE
+
+          if (-not (Test-Path $resultsPath)) {
+            throw "NUnit did not write $resultsPath"
+          }
+
+          [xml]$results = Get-Content -Raw $resultsPath
+          $testCases = @($results.SelectNodes('//test-case'))
+          if ($testCases.Count -ne 5) {
+            throw "Expected exactly 5 focused test cases, found $($testCases.Count)"
+          }
+
+          $actualNames = @($testCases | ForEach-Object { $_.name })
+          if (@(Compare-Object -ReferenceObject $expectedTests -DifferenceObject $actualNames).Count -ne 0) {
+            throw 'NUnit XML did not contain exactly the expected focused test cases'
+          }
+
+          $nonPassingCases = @($testCases | Where-Object {
+            $_.executed -ne 'True' -or $_.result -ne 'Success' -or $_.success -ne 'True'
+          })
+          if ($nonPassingCases.Count -ne 0) {
+            throw "Focused NUnit XML contains non-passing tests: $($nonPassingCases.name -join ', ')"
+          }
+
+          if ($testExitCode -ne 0) {
+            exit $testExitCode
+          }
+
+      - name: Check mutation sensitivity after green validation
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $fixture = 'WinMemoryCleaner.Test.ViewModelTests+MainViewModelMonitorWaitTests'
+          $testAssembly = 'src\bin\Release\WinMemoryCleaner.exe'
+          $testRunner = 'src\packages\NUnit.Runners.2.6.4\tools\nunit-console.exe'
+          $sourcePath = 'src\ViewModel\MainViewModel.cs'
+          $mutationResultsPath = 'monitor-wait-mutation-results.xml'
+          $busyInvariantTest = "$fixture.GetMonitorWaitMilliseconds_WhenBusy_UsesBoundedBackoffForBothMonitors"
+          $busyElapsedTest = "$fixture.WaitForMonitor_WhenBusyAndNotCancelled_WaitsForBackoffAndReturnsFalse"
+          $expectedTests = @(
+            $busyInvariantTest,
+            "$fixture.GetMonitorWaitMilliseconds_WhenNotBusy_PreservesNormalPollingIntervals",
+            $busyElapsedTest,
+            "$fixture.WaitForMonitor_WhenCancellationRequested_ReturnsWithoutWaiting",
+            "$fixture.WaitForMonitor_WhenCancelledDuringNormalWait_ReturnsCancellation"
+          )
+          $expectedFailureTests = @($busyInvariantTest, $busyElapsedTest)
+
+          if (-not (Test-Path $testRunner)) {
+            throw "NUnit runner was not restored at $testRunner"
+          }
+
+          $originalBytes = [System.IO.File]::ReadAllBytes($sourcePath)
+          $originalSource = [System.Text.Encoding]::UTF8.GetString($originalBytes)
+          $match = 'internal const int BusyMonitorWaitMilliseconds = 100;'
+          if ([regex]::Matches($originalSource, [regex]::Escape($match)).Count -ne 1) {
+            throw 'Expected exactly one BusyMonitorWaitMilliseconds = 100 constant before mutation'
+          }
+
+          $mutationFailure = $null
+          $restoreBuildExitCode = $null
+          try {
+            $mutatedSource = $originalSource.Replace($match, 'internal const int BusyMonitorWaitMilliseconds = 0;')
+            [System.IO.File]::WriteAllText($sourcePath, $mutatedSource, [System.Text.UTF8Encoding]::new($false))
+
+            & msbuild src\WinMemoryCleaner.sln /m /p:Configuration=Release /p:Platform="Any CPU" /p:CI=true
+            if ($LASTEXITCODE -ne 0) {
+              throw "Mutated source build failed with exit code $LASTEXITCODE"
+            }
+
+            & $testRunner $testAssembly "/fixture:$fixture" "/xml:$mutationResultsPath"
+            $mutationTestExitCode = $LASTEXITCODE
+            if ($mutationTestExitCode -eq 0) {
+              throw 'Mutated focused tests unexpectedly returned a zero exit code'
+            }
+            if (-not (Test-Path $mutationResultsPath)) {
+              throw "NUnit did not write $mutationResultsPath for the mutation run"
+            }
+
+            [xml]$mutationResults = Get-Content -Raw $mutationResultsPath
+            $mutationCases = @($mutationResults.SelectNodes('//test-case'))
+            if ($mutationCases.Count -ne 5) {
+              throw "Expected exactly 5 mutation test cases, found $($mutationCases.Count)"
+            }
+
+            $actualNames = @($mutationCases | ForEach-Object { $_.name })
+            if (@(Compare-Object -ReferenceObject $expectedTests -DifferenceObject $actualNames).Count -ne 0) {
+              throw 'Mutation NUnit XML did not contain exactly the expected focused test cases'
+            }
+
+            $actualFailureNames = @($mutationCases | Where-Object {
+              $_.executed -eq 'True' -and $_.result -eq 'Failure' -and $_.success -eq 'False'
+            } | ForEach-Object { $_.name })
+            if (@(Compare-Object -ReferenceObject $expectedFailureTests -DifferenceObject $actualFailureNames).Count -ne 0) {
+              throw "Mutation did not fail exactly the busy invariant and elapsed-wait tests: $($actualFailureNames -join ', ')"
+            }
+
+            $unexpectedCases = @($mutationCases | Where-Object {
+              $_.executed -ne 'True' -or ($_.name -notin $expectedFailureTests -and ($_.result -ne 'Success' -or $_.success -ne 'True'))
+            })
+            if ($unexpectedCases.Count -ne 0) {
+              throw "Mutation NUnit XML contains unexpected non-passing tests: $($unexpectedCases.name -join ', ')"
+            }
+
+            Write-Host 'Mutation sensitivity confirmed: the busy invariant and elapsed-wait tests failed as expected.'
+          }
+          catch {
+            $mutationFailure = $_
+          }
+          finally {
+            [System.IO.File]::WriteAllBytes($sourcePath, $originalBytes)
+            & msbuild src\WinMemoryCleaner.sln /m /p:Configuration=Release /p:Platform="Any CPU" /p:CI=true
+            $restoreBuildExitCode = $LASTEXITCODE
+          }
+
+          if ($restoreBuildExitCode -ne 0) {
+            throw "Original source rebuild after mutation failed with exit code $restoreBuildExitCode"
+          }
+          if ($null -ne $mutationFailure) {
+            throw $mutationFailure
+          }
+
+      - name: Upload focused NUnit XML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: monitor-wait-results-${{ github.run_number }}
+          path: |
+            monitor-wait-results.xml
+            monitor-wait-mutation-results.xml
+          if-no-files-found: warn
+          retention-days: 7

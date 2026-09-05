@@ -19,6 +19,8 @@ namespace WinMemoryCleaner
     {
         #region Fields
 
+        internal const int BusyMonitorWaitMilliseconds = 100;
+
         private readonly CancellationTokenSource _cancellationTokenSource = new CancellationTokenSource();
         private Computer _computer;
         private readonly IComputerService _computerService;
@@ -1608,6 +1610,16 @@ namespace WinMemoryCleaner
             }
         }
 
+        internal static int GetMonitorWaitMilliseconds(bool isBusy, int normalPollingInterval)
+        {
+            return isBusy ? BusyMonitorWaitMilliseconds : normalPollingInterval;
+        }
+
+        internal static bool WaitForMonitor(CancellationToken cancellationToken, bool isBusy, int normalPollingInterval)
+        {
+            return cancellationToken.WaitHandle.WaitOne(GetMonitorWaitMilliseconds(isBusy, normalPollingInterval));
+        }
+
         /// <summary>
         /// Monitor App Resources
         /// </summary>
@@ -1617,13 +1629,14 @@ namespace WinMemoryCleaner
             {
                 try
                 {
-                    // Check if it's busy
-                    if (IsBusy)
-                        continue;
+                    var isBusy = IsBusy;
 
                     // Delay
-                    if (_cancellationTokenSource.Token.WaitHandle.WaitOne(60000))
+                    if (WaitForMonitor(_cancellationTokenSource.Token, isBusy, 60000))
                         break;
+
+                    if (isBusy)
+                        continue;
 
                     // Update app
                     Updater.Update();
@@ -1706,7 +1719,12 @@ namespace WinMemoryCleaner
                 {
                     // Check if it's busy
                     if (IsBusy)
+                    {
+                        if (WaitForMonitor(_cancellationTokenSource.Token, true, 5000))
+                            break;
+
                         continue;
+                    }
 
                     lock (_lockObject)
                     {
@@ -1720,7 +1738,7 @@ namespace WinMemoryCleaner
                     }
 
                     // Delay
-                    if (_cancellationTokenSource.Token.WaitHandle.WaitOne(5000))
+                    if (WaitForMonitor(_cancellationTokenSource.Token, false, 5000))
                         break;
                 }
                 catch (Exception e)
