@@ -5,10 +5,13 @@ on:
     branches:
       - test/internal-memory-improvements
     paths:
+      - 'src/App.xaml.cs'
       - 'src/Core/Constants.cs'
+      - 'src/Core/OptimizationTiming.cs'
       - 'src/Interop/NativeMethods.cs'
       - 'src/Service/ComputerService.cs'
       - 'src/Test/NativeMemoryInteropTests.cs'
+      - 'src/Test/ReleaseMemoryTests.cs'
       - 'src/WinMemoryCleaner.csproj'
       - '.github/workflows/internal-memory-validation.yml'
   workflow_dispatch:
@@ -42,62 +45,84 @@ jobs:
         shell: pwsh
         run: msbuild src\WinMemoryCleaner.sln /m /p:Configuration=Release /p:Platform="Any CPU" /p:IsCI=true "/p:RestartFlag=$env:GITHUB_WORKSPACE\ci-restart-required.flag"
 
-      - name: Run explicit safe native fixture allowlist
+      - name: Run explicit safe fixture allowlists
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $testAssembly = 'src\bin\Release\WinMemoryCleaner.exe'
           $testRunner = 'src\packages\NUnit.Runners.2.6.4\tools\nunit-console.exe'
-          $resultsPath = 'native-memory-results.xml'
-          $fixture = 'WinMemoryCleaner.NativeMemoryTests.NativeMemoryInteropTests'
-          $expectedTests = @(
-            "$fixture.CreateNtStatusException_WhenStatusIsAccessDenied_MapsToWin32AccessDenied",
-            "$fixture.CreateNtStatusException_WhenStatusIsInvalidParameter_MapsWithoutStaleWin32Error",
-            "$fixture.IsAdjustTokenPrivilegesSuccessful_WhenNativeCallAndLastErrorSucceed_ReturnsTrue",
-            "$fixture.IsAdjustTokenPrivilegesSuccessful_WhenNotAllPrivilegesAreAssigned_ReturnsFalse",
-            "$fixture.IsAdjustTokenPrivilegesSuccessful_WhenNativeCallSucceedsWithError_ReturnsFalse",
-            "$fixture.IsAdjustTokenPrivilegesSuccessful_WhenNativeCallFailsWithSuccessError_ReturnsFalse",
-            "$fixture.IsAdjustTokenPrivilegesSuccessful_WhenNativeCallFailsWithError_ReturnsFalse"
-          )
 
           if (-not (Test-Path $testRunner)) {
             throw "NUnit runner was not restored at $testRunner"
           }
 
-          & $testRunner $testAssembly "/fixture:$fixture" "/xml:$resultsPath"
-          $testExitCode = $LASTEXITCODE
+          function Invoke-SafeFixture {
+            param(
+              [string]$Fixture,
+              [string]$ResultsPath,
+              [string[]]$ExpectedTests
+            )
 
-          if (-not (Test-Path $resultsPath)) {
-            throw "NUnit did not write $resultsPath"
+            & $testRunner $testAssembly "/fixture:$Fixture" "/xml:$ResultsPath"
+            $testExitCode = $LASTEXITCODE
+
+            if (-not (Test-Path $ResultsPath)) {
+              throw "NUnit did not write $ResultsPath"
+            }
+
+            [xml]$results = Get-Content -Raw $ResultsPath
+            $testCases = @($results.SelectNodes('//test-case'))
+            if ($testCases.Count -ne $ExpectedTests.Count) {
+              throw "Expected $($ExpectedTests.Count) safe test cases, found $($testCases.Count)"
+            }
+
+            $actualNames = @($testCases | ForEach-Object { $_.name })
+            if (@(Compare-Object -ReferenceObject $ExpectedTests -DifferenceObject $actualNames).Count -ne 0) {
+              throw 'NUnit XML did not contain exactly the safe fixture allowlist'
+            }
+
+            $nonPassingCases = @($testCases | Where-Object {
+              $_.executed -ne 'True' -or $_.result -ne 'Success' -or $_.success -ne 'True'
+            })
+            if ($nonPassingCases.Count -ne 0) {
+              throw "Safe fixture contains non-passing tests: $($nonPassingCases.name -join ', ')"
+            }
+
+            if ($testExitCode -ne 0) {
+              exit $testExitCode
+            }
           }
 
-          [xml]$results = Get-Content -Raw $resultsPath
-          $testCases = @($results.SelectNodes('//test-case'))
-          if ($testCases.Count -ne $expectedTests.Count) {
-            throw "Expected $($expectedTests.Count) safe native test cases, found $($testCases.Count)"
-          }
+          $nativeFixture = 'WinMemoryCleaner.NativeMemoryTests.NativeMemoryInteropTests'
+          Invoke-SafeFixture $nativeFixture 'native-memory-results.xml' @(
+            "$nativeFixture.CreateNtStatusException_WhenStatusIsAccessDenied_MapsToWin32AccessDenied",
+            "$nativeFixture.CreateNtStatusException_WhenStatusIsInvalidParameter_MapsWithoutStaleWin32Error",
+            "$nativeFixture.IsAdjustTokenPrivilegesSuccessful_WhenNativeCallAndLastErrorSucceed_ReturnsTrue",
+            "$nativeFixture.IsAdjustTokenPrivilegesSuccessful_WhenNotAllPrivilegesAreAssigned_ReturnsFalse",
+            "$nativeFixture.IsAdjustTokenPrivilegesSuccessful_WhenNativeCallSucceedsWithError_ReturnsFalse",
+            "$nativeFixture.IsAdjustTokenPrivilegesSuccessful_WhenNativeCallFailsWithSuccessError_ReturnsFalse",
+            "$nativeFixture.IsAdjustTokenPrivilegesSuccessful_WhenNativeCallFailsWithError_ReturnsFalse"
+          )
 
-          $actualNames = @($testCases | ForEach-Object { $_.name })
-          if (@(Compare-Object -ReferenceObject $expectedTests -DifferenceObject $actualNames).Count -ne 0) {
-            throw 'NUnit XML did not contain exactly the safe native fixture allowlist'
-          }
-
-          $nonPassingCases = @($testCases | Where-Object {
-            $_.executed -ne 'True' -or $_.result -ne 'Success' -or $_.success -ne 'True'
-          })
-          if ($nonPassingCases.Count -ne 0) {
-            throw "Safe native fixture contains non-passing tests: $($nonPassingCases.name -join ', ')"
-          }
-
-          if ($testExitCode -ne 0) {
-            exit $testExitCode
-          }
+          $releaseMemoryFixture = 'WinMemoryCleaner.ReleaseMemoryTests.ReleaseMemoryTests'
+          Invoke-SafeFixture $releaseMemoryFixture 'release-memory-results.xml' @(
+            "$releaseMemoryFixture.ReleaseMemory_WhenModeIsNone_DoesNotRunCleanupStages",
+            "$releaseMemoryFixture.ReleaseMemory_WhenModeIsGCOnly_RunsOnlyGarbageCollection",
+            "$releaseMemoryFixture.ReleaseMemory_WhenModeIsTrimOnly_RunsOnlyWorkingSetTrim",
+            "$releaseMemoryFixture.ReleaseMemory_WhenModeIsCombined_RunsBothCleanupStages",
+            "$releaseMemoryFixture.ReleaseMemory_WhenCombined_RunsGarbageCollectionBeforeWorkingSetTrim",
+            "$releaseMemoryFixture.ReleaseMemory_WhenGarbageCollectionThrows_StillRunsWorkingSetTrim",
+            "$releaseMemoryFixture.ReleaseMemory_WhenWorkingSetTrimThrows_DoesNotPreventGarbageCollection",
+            "$releaseMemoryFixture.OptimizeTiming_WhenFinalAppReleaseRuns_IncludesItInTotalDuration"
+          )
 
       - name: Upload focused NUnit XML
         if: always()
         uses: actions/upload-artifact@v4
         with:
           name: native-memory-results-${{ github.run_number }}
-          path: native-memory-results.xml
+          path: |
+            native-memory-results.xml
+            release-memory-results.xml
           if-no-files-found: warn
           retention-days: 7

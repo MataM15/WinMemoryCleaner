@@ -129,6 +129,7 @@
     <Compile Include="Core\Migrator.cs" />
     <Compile Include="Core\ObservableObject.cs" />
     <Compile Include="Core\OptimizationRequestCoordinator.cs" />
+    <Compile Include="Core\OptimizationTiming.cs" />
     <Compile Include="Core\Settings.cs" />
     <Compile Include="Core\Structs.cs" />
     <Compile Include="Core\ThemeManager.cs" />
@@ -165,6 +166,7 @@
     <Compile Include="Test\IntegrationTests.cs" />
     <Compile Include="Test\Mocker.cs" />
     <Compile Include="Test\NativeMemoryInteropTests.cs" />
+    <Compile Include="Test\ReleaseMemoryTests.cs" />
     <Compile Include="Test\ModelTests.cs" />
     <Compile Include="Test\ServiceTests.cs" />
     <Compile Include="Test\SecurityPolicyTests.cs" />

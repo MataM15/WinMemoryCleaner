@@ -170,6 +170,8 @@ namespace WinMemoryCleaner
             var infoRuntime = new TimeSpan();
             var optimizationReason = reason.GetString();
             var stopwatch = new Stopwatch();
+            var totalStopwatch = Stopwatch.StartNew();
+            var optimizationTiming = new OptimizationTiming(() => totalStopwatch.Elapsed);
             var value = (byte)0;
 
             var error = new LogOptimizationData { Reason = optimizationReason };
@@ -431,6 +433,8 @@ namespace WinMemoryCleaner
             }
 
             // Garbage Collector
+            var totalRuntime = infoRuntime;
+
             try
             {
                 if (OnOptimizeProgressUpdate != null)
@@ -439,7 +443,7 @@ namespace WinMemoryCleaner
                     OnOptimizeProgressUpdate(value, Localizer.String.GarbageCollector);
                 }
 
-                App.ReleaseMemory();
+                totalRuntime = optimizationTiming.Complete(infoRuntime, App.ReleaseMemory);
             }
             catch
             {
@@ -452,7 +456,7 @@ namespace WinMemoryCleaner
                 // Info
                 if (info.MemoryAreas.Any())
                 {
-                    info.Duration = string.Format(Localizer.Culture, "{0:0.0} {1}", infoRuntime.TotalSeconds, Localizer.String.Seconds.ToLower(Localizer.Culture));
+                    info.Duration = string.Format(Localizer.Culture, "{0:0.0} {1}", totalRuntime.TotalSeconds, Localizer.String.Seconds.ToLower(Localizer.Culture));
 
                     Logger.Log(new Log(Enums.Log.Levels.Information, Localizer.String.MemoryOptimized, info));
                 }
