@@ -6,6 +6,7 @@ namespace WinMemoryCleaner
     internal sealed class OptimizationRequestCoordinator
     {
         private readonly Func<Action, bool> _scheduler;
+        private object _activeRequest;
 
         public OptimizationRequestCoordinator()
             : this(action => ThreadPool.QueueUserWorkItem(_ => action()))
@@ -27,8 +28,42 @@ namespace WinMemoryCleaner
             if (work == null)
                 throw new ArgumentNullException("work");
 
-            onAccepted();
-            return _scheduler(work);
+            object request = new object();
+            if (Interlocked.CompareExchange(ref _activeRequest, request, null) != null)
+                return false;
+
+            try
+            {
+                onAccepted();
+
+                if (!_scheduler(() =>
+                {
+                    try
+                    {
+                        work();
+                    }
+                    finally
+                    {
+                        Release(request);
+                    }
+                }))
+                {
+                    Release(request);
+                    return false;
+                }
+
+                return true;
+            }
+            catch
+            {
+                Release(request);
+                throw;
+            }
+        }
+
+        private void Release(object request)
+        {
+            Interlocked.CompareExchange(ref _activeRequest, null, request);
         }
     }
 }
