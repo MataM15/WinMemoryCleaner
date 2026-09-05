@@ -686,7 +686,7 @@ namespace WinMemoryCleaner.Test
                 using (var cancellationTokenSource = new CancellationTokenSource())
                 {
                     var stopwatch = Stopwatch.StartNew();
-                    var cancellationObserved = MainViewModel.WaitForMonitor(cancellationTokenSource.Token, true, 60000);
+                    var cancellationObserved = MainViewModel.WaitForMonitor(true, 60000, cancellationTokenSource.Token);
                     stopwatch.Stop();
 
                     Assert.IsFalse(cancellationObserved);
@@ -701,8 +701,8 @@ namespace WinMemoryCleaner.Test
                 {
                     cancellationTokenSource.Cancel();
 
-                    Assert.IsTrue(MainViewModel.WaitForMonitor(cancellationTokenSource.Token, true, 60000));
-                    Assert.IsTrue(MainViewModel.WaitForMonitor(cancellationTokenSource.Token, false, 5000));
+                    Assert.IsTrue(MainViewModel.WaitForMonitor(true, 60000, cancellationTokenSource.Token));
+                    Assert.IsTrue(MainViewModel.WaitForMonitor(false, 5000, cancellationTokenSource.Token));
                 }
             }
 
@@ -712,70 +712,62 @@ namespace WinMemoryCleaner.Test
                 const int normalWaitMilliseconds = 5000;
                 const int synchronizationTimeoutMilliseconds = 1000;
                 const int cleanupTimeoutMilliseconds = normalWaitMilliseconds + synchronizationTimeoutMilliseconds;
-                var cancellationTokenSource = new CancellationTokenSource();
-                var waitEntered = new ManualResetEvent(false);
-                var workerCompleted = new ManualResetEvent(false);
                 Thread worker = null;
                 var cancellationObserved = 0;
+                Exception workerException = null;
                 var workerStopped = false;
 
-                try
+                using (var cancellationTokenSource = new CancellationTokenSource())
                 {
-                    worker = new Thread(() =>
+                    try
                     {
-                        try
+                        worker = new Thread(() =>
                         {
-                            waitEntered.Set();
-                            if (MainViewModel.WaitForMonitor(cancellationTokenSource.Token, false, normalWaitMilliseconds))
-                                Interlocked.Exchange(ref cancellationObserved, 1);
-                        }
-                        finally
+                            try
+                            {
+                                if (MainViewModel.WaitForMonitor(false, normalWaitMilliseconds, cancellationTokenSource.Token))
+                                    Interlocked.Exchange(ref cancellationObserved, 1);
+                            }
+                            catch (Exception exception)
+                            {
+                                workerException = exception;
+                            }
+                        });
+                        worker.IsBackground = true;
+                        worker.Start();
+
+                        var inFlightTimeout = Stopwatch.StartNew();
+                        while ((worker.ThreadState & System.Threading.ThreadState.WaitSleepJoin) == 0
+                            && inFlightTimeout.ElapsedMilliseconds < synchronizationTimeoutMilliseconds)
                         {
-                            workerCompleted.Set();
+                            worker.Join(10);
                         }
-                    });
-                    worker.Start();
+                        inFlightTimeout.Stop();
 
-                    Assert.IsTrue(waitEntered.WaitOne(synchronizationTimeoutMilliseconds));
+                        Assert.IsTrue((worker.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0,
+                            "The worker must be waiting normally before cancellation is requested.");
 
-                    var inFlightTimeout = Stopwatch.StartNew();
-                    while ((worker.ThreadState & System.Threading.ThreadState.WaitSleepJoin) == 0
-                        && inFlightTimeout.ElapsedMilliseconds < synchronizationTimeoutMilliseconds)
-                    {
-                        worker.Join(10);
+                        cancellationTokenSource.Cancel();
+
+                        workerStopped = worker.Join(synchronizationTimeoutMilliseconds);
+                        Assert.IsTrue(workerStopped);
+                        Assert.IsNull(workerException, "The worker must not throw while waiting for cancellation.");
+                        Assert.AreEqual(1, Interlocked.CompareExchange(ref cancellationObserved, 0, 0));
                     }
-                    inFlightTimeout.Stop();
-
-                    Assert.IsTrue((worker.ThreadState & System.Threading.ThreadState.WaitSleepJoin) != 0,
-                        "The worker must be waiting normally before cancellation is requested.");
-
-                    cancellationTokenSource.Cancel();
-
-                    Assert.IsTrue(workerCompleted.WaitOne(synchronizationTimeoutMilliseconds));
-                    Assert.AreEqual(1, Interlocked.CompareExchange(ref cancellationObserved, 0, 0));
-                    workerStopped = worker.Join(synchronizationTimeoutMilliseconds);
-                    Assert.IsTrue(workerStopped);
-                }
-                finally
-                {
-                    cancellationTokenSource.Cancel();
-                    if (worker == null || !worker.IsAlive)
+                    finally
                     {
-                        workerStopped = true;
-                    }
-                    else
-                    {
-                        workerStopped = worker.Join(cleanupTimeoutMilliseconds);
-                    }
+                        cancellationTokenSource.Cancel();
+                        if (worker == null || !worker.IsAlive)
+                        {
+                            workerStopped = true;
+                        }
+                        else
+                        {
+                            workerStopped = worker.Join(cleanupTimeoutMilliseconds);
+                        }
 
-                    if (workerStopped)
-                    {
-                        waitEntered.Dispose();
-                        workerCompleted.Dispose();
-                        cancellationTokenSource.Dispose();
+                        Assert.IsTrue(workerStopped, "The worker must stop before its cancellation token source is disposed.");
                     }
-
-                    Assert.IsTrue(workerStopped, "The worker must stop before its synchronization resources are disposed.");
                 }
             }
         }

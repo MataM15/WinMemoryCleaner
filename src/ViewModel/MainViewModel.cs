@@ -1615,7 +1615,7 @@ namespace WinMemoryCleaner
             return isBusy ? BusyMonitorWaitMilliseconds : normalPollingInterval;
         }
 
-        internal static bool WaitForMonitor(CancellationToken cancellationToken, bool isBusy, int normalPollingInterval)
+        internal static bool WaitForMonitor(bool isBusy, int normalPollingInterval, CancellationToken cancellationToken)
         {
             return cancellationToken.WaitHandle.WaitOne(GetMonitorWaitMilliseconds(isBusy, normalPollingInterval));
         }
@@ -1632,7 +1632,7 @@ namespace WinMemoryCleaner
                     var isBusy = IsBusy;
 
                     // Delay
-                    if (WaitForMonitor(_cancellationTokenSource.Token, isBusy, 60000))
+                    if (WaitForMonitor(isBusy, 60000, _cancellationTokenSource.Token))
                         break;
 
                     if (isBusy)
@@ -1720,7 +1720,7 @@ namespace WinMemoryCleaner
                     // Check if it's busy
                     if (IsBusy)
                     {
-                        if (WaitForMonitor(_cancellationTokenSource.Token, true, 5000))
+                        if (WaitForMonitor(true, 5000, _cancellationTokenSource.Token))
                             break;
 
                         continue;
@@ -1738,7 +1738,7 @@ namespace WinMemoryCleaner
                     }
 
                     // Delay
-                    if (WaitForMonitor(_cancellationTokenSource.Token, false, 5000))
+                    if (WaitForMonitor(false, 5000, _cancellationTokenSource.Token))
                         break;
                 }
                 catch (Exception e)
