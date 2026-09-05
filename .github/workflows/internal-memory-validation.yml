@@ -6,15 +6,20 @@ on:
       - test/internal-memory-improvements
     paths:
       - 'src/App.xaml.cs'
+      - 'src/Core/AutoOptimizationPolicy.cs'
       - 'src/Core/Constants.cs'
       - 'src/Core/OptimizationTiming.cs'
       - 'src/Interop/NativeMethods.cs'
       - 'src/Service/ComputerService.cs'
+      - 'src/Test/AutoOptimizationPolicyTests.cs'
       - 'src/Test/NativeMemoryInteropTests.cs'
+      - 'src/ViewModel/MainViewModel.cs'
+      - 'src/WindowsService/WinService.cs'
       - 'src/Test/ReleaseMemoryTests.cs'
       - 'src/Test/ReleaseMemoryBenchmarkTests.cs'
       - 'src/WinMemoryCleaner.csproj'
       - '.github/scripts/measure-release-memory.ps1'
+      - '.github/scripts/verify-auto-policy-mutation.ps1'
       - '.github/workflows/internal-memory-validation.yml'
       - 'docs/release-memory-benchmark.md'
   workflow_dispatch:
@@ -129,6 +134,28 @@ jobs:
             "$releaseMemoryFixture.OptimizeTiming_WhenFinalAppReleaseThrows_CapturesItsDuration"
           )
 
+          $autoPolicyFixture = 'WinMemoryCleaner.AutomationTests.AutoOptimizationPolicyTests'
+          Invoke-SafeFixture $autoPolicyFixture 'auto-policy-results.xml' @(
+            "$autoPolicyFixture.DisabledBoth_ReturnsNull",
+            "$autoPolicyFixture.Schedule_WhenJustBeforeDue_ReturnsNull",
+            "$autoPolicyFixture.Schedule_WhenExactlyDue_ReturnsSchedule",
+            "$autoPolicyFixture.LowMemory_WhenFreePercentageIsBelowThreshold_ReturnsLowMemory",
+            "$autoPolicyFixture.LowMemory_WhenFreePercentageEqualsThreshold_ReturnsNull",
+            "$autoPolicyFixture.LowMemory_WhenCooldownIsJustBeforeDue_ReturnsNull",
+            "$autoPolicyFixture.LowMemory_WhenCooldownIsExactlyDue_ReturnsLowMemory",
+            "$autoPolicyFixture.Schedule_WhenBothTriggersAreDue_ReturnsSchedule",
+            "$autoPolicyFixture.Schedule_WhenNonZeroIntervalCrossesDateBoundary_ReturnsSchedule"
+          )
+
+      - name: Prove auto optimization policy fixture detects a threshold mutant
+        shell: pwsh
+        run: |
+          & "$env:GITHUB_WORKSPACE\.github\scripts\verify-auto-policy-mutation.ps1" `
+            -Workspace $env:GITHUB_WORKSPACE `
+            -SolutionPath "$env:GITHUB_WORKSPACE\src\WinMemoryCleaner.sln" `
+            -TestAssembly "$env:GITHUB_WORKSPACE\src\bin\Release\WinMemoryCleaner.exe" `
+            -TestRunner "$env:GITHUB_WORKSPACE\src\packages\NUnit.Runners.2.6.4\tools\nunit-console.exe"
+
       - name: Upload focused NUnit XML
         if: always()
         uses: actions/upload-artifact@v4
@@ -137,6 +164,9 @@ jobs:
           path: |
             native-memory-results.xml
             release-memory-results.xml
+            auto-policy-results.xml
+            auto-policy-mutation-results.xml
+            auto-policy-restored-results.xml
           if-no-files-found: warn
           retention-days: 7
 
