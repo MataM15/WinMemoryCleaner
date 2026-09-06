@@ -71,7 +71,7 @@ jobs:
           if ($branchSha -notmatch '^[0-9a-f]{40}$' -or $candidateSha -ne $branchSha) {
             throw "target_sha does not match the current immutable SHA for $branch."
           }
-          $requiresBuild = if ($env:SLICE -eq 'exclusions') { 'false' } else { 'true' }
+          $requiresBuild = 'true'
           "candidate_sha=$candidateSha" >> $env:GITHUB_OUTPUT
           "slice=$($env:SLICE)" >> $env:GITHUB_OUTPUT
           "branch=$branch" >> $env:GITHUB_OUTPUT
