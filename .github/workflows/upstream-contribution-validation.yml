@@ -228,8 +228,8 @@ jobs:
           CANDIDATE_SHA: ${{ steps.validate.outputs.candidate_sha }}
           VALIDATED_SLICE: ${{ steps.validate.outputs.slice }}
         run: |
-          $build = if ($env:VALIDATED_SLICE -eq 'exclusions') { 'not-required' } else { 'Release AnyCPU IsCI=true' }
-          Write-Host "SUCCESS candidate SHA=$env:CANDIDATE_SHA build=$build slice=$env:VALIDATED_SLICE; selected tests and mutation evidence are in BUILD-INFO.txt."
+          $build = 'Release AnyCPU IsCI=true'
+          Write-Host "SUCCESS candidate SHA=$env:CANDIDATE_SHA build=$build slice=$env:VALIDATED_SLICE; see workflow logs and uploaded XML results for validation evidence."
 
       - name: Upload validation evidence
         if: always()
