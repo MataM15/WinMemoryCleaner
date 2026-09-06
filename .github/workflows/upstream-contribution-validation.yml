@@ -1,0 +1,247 @@
+name: Upstream Contribution Validation
+
+on:
+  push:
+    branches:
+      - test/internal-memory-improvements
+    paths:
+      - .github/workflows/upstream-contribution-validation.yml
+  workflow_dispatch:
+    inputs:
+      target_sha:
+        description: 'Immutable 40-character SHA from the selected fork branch'
+        required: true
+        type: string
+      slice:
+        description: 'Contribution slice to validate'
+        required: true
+        type: choice
+        options:
+          - native
+          - timing
+          - policy
+          - exclusions
+          - resize
+
+permissions:
+  contents: read
+
+jobs:
+  validate-contribution:
+    if: >-
+      github.event_name == 'workflow_dispatch' &&
+      github.repository == 'MataM15/WinMemoryCleaner' &&
+      github.ref == 'refs/heads/test/internal-memory-improvements'
+    runs-on: windows-2022
+    timeout-minutes: 15
+    env:
+      TARGET_SHA: ${{ inputs.target_sha }}
+      SLICE: ${{ inputs.slice }}
+      EVIDENCE_DIR: ${{ runner.temp }}\upstream-contribution-validation
+    steps:
+      - name: Validate immutable target and fork branch
+        id: validate
+        shell: pwsh
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $branches = @{
+            native = 'fix/native-status-errors'
+            timing = 'fix/complete-optimization-timing'
+            policy = 'refactor/shared-auto-optimization-policy'
+            exclusions = 'docs/working-set-exclusion-scope'
+            resize = 'fix/resizable-main-window'
+          }
+          if ($env:TARGET_SHA -notmatch '^[0-9a-fA-F]{40}$') {
+            throw 'target_sha must be exactly 40 hexadecimal characters.'
+          }
+          if (-not $branches.ContainsKey($env:SLICE)) {
+            throw 'slice is not an approved contribution slice.'
+          }
+          $candidateSha = $env:TARGET_SHA.ToLowerInvariant()
+          $branch = $branches[$env:SLICE]
+          $headers = @{
+            Authorization = "Bearer $env:GITHUB_TOKEN"
+            Accept = 'application/vnd.github+json'
+            'X-GitHub-Api-Version' = '2022-11-28'
+          }
+          $forkRef = Invoke-RestMethod -Uri "https://api.github.com/repos/MataM15/WinMemoryCleaner/git/ref/heads/$branch" -Headers $headers
+          $branchSha = $forkRef.object.sha.ToLowerInvariant()
+          if ($branchSha -notmatch '^[0-9a-f]{40}$' -or $candidateSha -ne $branchSha) {
+            throw "target_sha does not match the current immutable SHA for $branch."
+          }
+          $requiresBuild = if ($env:SLICE -eq 'exclusions') { 'false' } else { 'true' }
+          "candidate_sha=$candidateSha" >> $env:GITHUB_OUTPUT
+          "slice=$($env:SLICE)" >> $env:GITHUB_OUTPUT
+          "branch=$branch" >> $env:GITHUB_OUTPUT
+          "requires_build=$requiresBuild" >> $env:GITHUB_OUTPUT
+
+      - name: Checkout immutable tooling
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.sha }}
+          path: tooling
+          persist-credentials: false
+
+      - name: Checkout immutable candidate
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ steps.validate.outputs.candidate_sha }}
+          path: candidate
+          persist-credentials: false
+
+      - name: Verify candidate checkout and create evidence
+        shell: pwsh
+        env:
+          CANDIDATE_SHA: ${{ steps.validate.outputs.candidate_sha }}
+          VALIDATED_SLICE: ${{ steps.validate.outputs.slice }}
+          EXPECTED_BRANCH: ${{ steps.validate.outputs.branch }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $actualSha = (& git -C "$env:GITHUB_WORKSPACE\candidate" rev-parse HEAD).Trim().ToLowerInvariant()
+          if ($actualSha -ne $env:CANDIDATE_SHA) { throw 'Candidate checkout did not resolve to target_sha.' }
+          New-Item -ItemType Directory -Path $env:EVIDENCE_DIR -Force | Out-Null
+          @(
+            "Candidate SHA: $actualSha"
+            "Slice: $env:VALIDATED_SLICE"
+            "Expected fork branch: $env:EXPECTED_BRANCH"
+            "Workflow SHA: $env:GITHUB_SHA"
+          ) | Set-Content -LiteralPath (Join-Path $env:EVIDENCE_DIR 'BUILD-INFO.txt') -Encoding utf8
+
+      - name: Setup NuGet
+        if: steps.validate.outputs.requires_build == 'true'
+        uses: nuget/setup-nuget@v2
+
+      - name: Setup MSBuild
+        if: steps.validate.outputs.requires_build == 'true'
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Restore locked candidate packages
+        if: steps.validate.outputs.requires_build == 'true'
+        shell: pwsh
+        working-directory: candidate
+        run: nuget restore src\WinMemoryCleaner.sln -LockedMode
+
+      - name: Build candidate Release AnyCPU
+        if: steps.validate.outputs.requires_build == 'true'
+        shell: pwsh
+        working-directory: candidate
+        run: msbuild src\WinMemoryCleaner.sln /m /p:Configuration=Release /p:Platform="Any CPU" /p:IsCI=true "/p:RestartFlag=$env:GITHUB_WORKSPACE\ci-restart-required.flag"
+
+      - name: Run selected safe NUnit allowlist
+        if: >-
+          steps.validate.outputs.slice == 'native' ||
+          steps.validate.outputs.slice == 'timing' ||
+          steps.validate.outputs.slice == 'policy'
+        shell: pwsh
+        working-directory: candidate
+        env:
+          VALIDATED_SLICE: ${{ steps.validate.outputs.slice }}
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $testAssembly = 'src\bin\Release\WinMemoryCleaner.exe'
+          $testRunner = 'src\packages\NUnit.Runners.2.6.4\tools\nunit-console.exe'
+          if (-not (Test-Path -LiteralPath $testRunner -PathType Leaf)) { throw "NUnit runner was not restored at $testRunner" }
+          $fixtures = @{
+            native = @{ Name = 'WinMemoryCleaner.NativeMemoryTests.NativeMemoryInteropTests'; Output = 'native-memory-results.xml'; Tests = @(
+              'CreateNtStatusException_WhenStatusIsAccessDenied_MapsToWin32AccessDenied', 'CreateNtStatusException_WhenStatusIsInvalidParameter_MapsWithoutStaleWin32Error',
+              'IsAdjustTokenPrivilegesSuccessful_WhenNativeCallAndLastErrorSucceed_ReturnsTrue', 'IsAdjustTokenPrivilegesSuccessful_WhenNotAllPrivilegesAreAssigned_ReturnsFalse',
+              'IsAdjustTokenPrivilegesSuccessful_WhenNativeCallSucceedsWithError_ReturnsFalse', 'IsAdjustTokenPrivilegesSuccessful_WhenNativeCallFailsWithSuccessError_ReturnsFalse', 'IsAdjustTokenPrivilegesSuccessful_WhenNativeCallFailsWithError_ReturnsFalse') }
+            timing = @{ Name = 'WinMemoryCleaner.MemoryReleaseTests.ReleaseMemoryTests'; Output = 'release-memory-results.xml'; Tests = @(
+              'ReleaseMemory_WhenModeIsNone_DoesNotRunCleanupStages', 'ReleaseMemory_WhenModeIsGCOnly_RunsOnlyGarbageCollection', 'ReleaseMemory_WhenModeIsTrimOnly_RunsOnlyWorkingSetTrim',
+              'ReleaseMemory_WhenModeIsCombined_RunsBothCleanupStages', 'ReleaseMemory_WhenCombined_RunsGarbageCollectionBeforeWorkingSetTrim', 'ReleaseMemory_WhenGarbageCollectionThrows_StillRunsWorkingSetTrim',
+              'ReleaseMemory_WhenWorkingSetTrimThrows_DoesNotPreventGarbageCollection', 'OptimizeTiming_WhenFinalAppReleaseRuns_IncludesItInTotalDuration',
+              'OptimizeTiming_WhenNativeStageFailsAndOverheadRuns_IncludesAllElapsedTime', 'OptimizeTiming_WhenFinalAppReleaseThrows_CapturesItsDuration') }
+            policy = @{ Name = 'WinMemoryCleaner.AutomationTests.AutoOptimizationPolicyTests'; Output = 'auto-policy-results.xml'; Tests = @(
+              'DisabledBoth_ReturnsNull', 'Schedule_WhenJustBeforeDue_ReturnsNull', 'Schedule_WhenExactlyDue_ReturnsSchedule',
+              'LowMemory_WhenFreePercentageIsBelowThreshold_ReturnsLowMemory', 'LowMemory_WhenFreePercentageEqualsThreshold_ReturnsNull', 'LowMemory_WhenCooldownIsJustBeforeDue_ReturnsNull',
+              'LowMemory_WhenCooldownIsExactlyDue_ReturnsLowMemory', 'Schedule_WhenBothTriggersAreDue_ReturnsSchedule', 'Schedule_WhenNonZeroIntervalCrossesDateBoundary_ReturnsSchedule') }
+          }
+          $selected = $fixtures[$env:VALIDATED_SLICE]
+          $expected = @($selected.Tests | ForEach-Object { "$($selected.Name).$_" })
+          & $testRunner $testAssembly "/fixture:$($selected.Name)" "/xml:$($selected.Output)" /noshadow
+          $exitCode = $LASTEXITCODE
+          if (-not (Test-Path -LiteralPath $selected.Output -PathType Leaf)) { throw 'NUnit did not write XML results.' }
+          [xml]$xml = Get-Content -LiteralPath $selected.Output -Raw
+          $summary = $xml.SelectSingleNode('/test-results')
+          if ($null -eq $summary -or [int]$summary.total -ne $expected.Count) { throw 'NUnit XML total did not match the allowlist.' }
+          foreach ($attribute in @('failures', 'errors', 'not-run', 'ignored', 'skipped', 'inconclusive', 'invalid')) {
+            if ($summary.GetAttribute($attribute) -and [int]$summary.GetAttribute($attribute) -ne 0) { throw "NUnit XML reports $attribute." }
+          }
+          $cases = @($xml.SelectNodes('//test-case'))
+          $actual = @($cases | ForEach-Object { $_.name })
+          if ($cases.Count -ne $expected.Count -or @(Compare-Object $expected $actual).Count -ne 0) { throw 'NUnit XML did not contain exactly the safe fixture allowlist.' }
+          if (@($cases | Where-Object { $_.executed -ne 'True' -or $_.result -ne 'Success' -or $_.success -ne 'True' }).Count -ne 0) { throw 'NUnit XML contains failed, errored, or skipped tests.' }
+          if ($exitCode -ne 0) { exit $exitCode }
+          "Selected tests: $($expected -join ', ')" | Add-Content -LiteralPath (Join-Path $env:EVIDENCE_DIR 'BUILD-INFO.txt')
+
+      - name: Validate exclusion localization contract
+        if: steps.validate.outputs.slice == 'exclusions'
+        shell: pwsh
+        working-directory: candidate
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $files = @(Get-ChildItem -LiteralPath 'src\Resources\Localization' -Filter '*.json' -File)
+          if ($files.Count -ne 30) { throw "Expected 30 localization JSON files, found $($files.Count)." }
+          $model = Get-Content -LiteralPath 'src\Model\Localization.cs' -Raw
+          $modelKeys = @([regex]::Matches($model, '(?ms)\[DataMember\]\s*public\s+string\s+(\w+)\s*\{') | ForEach-Object { $_.Groups[1].Value } | Sort-Object -Unique)
+          if ($modelKeys.Count -eq 0) { throw 'Localization model exposes no DataMember string properties.' }
+          foreach ($file in $files) {
+            $raw = Get-Content -LiteralPath $file.FullName -Raw
+            $rawKeys = @([regex]::Matches($raw, '(?m)^\s*"([^"\\]+)"\s*:') | ForEach-Object { $_.Groups[1].Value })
+            if ($rawKeys.Count -ne @($rawKeys | Sort-Object -Unique).Count) { throw "Duplicate JSON key in $($file.Name)." }
+            $json = $raw | ConvertFrom-Json
+            $keys = @($json.psobject.Properties.Name | Sort-Object)
+            if (@(Compare-Object $modelKeys $keys).Count -ne 0) { throw "Localization keys do not match the model in $($file.Name)." }
+            foreach ($key in $modelKeys) {
+              $value = $json.$key
+              if ($value -isnot [string] -or [string]::IsNullOrWhiteSpace($value)) { throw "Localization value $key is empty in $($file.Name)." }
+            }
+            foreach ($header in @('ProcessExclusionList', 'ProcessExclusionListDescription')) {
+              if ([string]::IsNullOrWhiteSpace($json.$header)) { throw "Exclusion header $header is empty in $($file.Name)." }
+            }
+          }
+          'Validated 30 localization JSON files, model key sets, nonempty strings, and exclusion headers.' | Add-Content -LiteralPath (Join-Path $env:EVIDENCE_DIR 'BUILD-INFO.txt')
+
+      - name: Prove policy mutation and restoration
+        if: steps.validate.outputs.slice == 'policy'
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $candidate = Join-Path $env:GITHUB_WORKSPACE 'candidate'
+          $source = Join-Path $candidate 'src\Core\AutoOptimizationPolicy.cs'
+          $solution = Join-Path $candidate 'src\WinMemoryCleaner.sln'
+          $assembly = Join-Path $candidate 'src\bin\Release\WinMemoryCleaner.exe'
+          $runner = Join-Path $candidate 'src\packages\NUnit.Runners.2.6.4\tools\nunit-console.exe'
+          foreach ($path in @($source, $solution, $assembly, $runner)) { if (-not (Test-Path -LiteralPath $path -PathType Leaf)) { throw "Required candidate path is missing: $path" } }
+          & "$env:GITHUB_WORKSPACE\tooling\.github\scripts\verify-auto-policy-mutation.ps1" -Workspace $candidate -SolutionPath $solution -TestAssembly $assembly -TestRunner $runner
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          & git -C $candidate diff --exit-code
+          if ($LASTEXITCODE -ne 0) { throw 'Policy mutation was not restored cleanly.' }
+          'Policy mutation failed as expected, then source restoration, rebuild, and nine-test retest completed.' | Add-Content -LiteralPath (Join-Path $env:EVIDENCE_DIR 'BUILD-INFO.txt')
+
+      - name: Report successful validation
+        if: success()
+        shell: pwsh
+        env:
+          CANDIDATE_SHA: ${{ steps.validate.outputs.candidate_sha }}
+          VALIDATED_SLICE: ${{ steps.validate.outputs.slice }}
+        run: |
+          $build = if ($env:VALIDATED_SLICE -eq 'exclusions') { 'not-required' } else { 'Release AnyCPU IsCI=true' }
+          Write-Host "SUCCESS candidate SHA=$env:CANDIDATE_SHA build=$build slice=$env:VALIDATED_SLICE; selected tests and mutation evidence are in BUILD-INFO.txt."
+
+      - name: Upload validation evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: upstream-contribution-validation-${{ github.run_number }}
+          path: |
+            ${{ runner.temp }}\upstream-contribution-validation\BUILD-INFO.txt
+            candidate\native-memory-results.xml
+            candidate\release-memory-results.xml
+            candidate\auto-policy-results.xml
+            candidate\auto-policy-mutation-results.xml
+            candidate\auto-policy-restored-results.xml
+          if-no-files-found: warn
+          retention-days: 7
