@@ -37,7 +37,7 @@ jobs:
     env:
       TARGET_SHA: ${{ inputs.target_sha }}
       SLICE: ${{ inputs.slice }}
-      EVIDENCE_DIR: ${{ runner.temp }}\upstream-contribution-validation
+      EVIDENCE_DIR: ${{ github.workspace }}\upstream-contribution-validation
     steps:
       - name: Validate immutable target and fork branch
         id: validate
@@ -237,7 +237,7 @@ jobs:
         with:
           name: upstream-contribution-validation-${{ github.run_number }}
           path: |
-            ${{ runner.temp }}\upstream-contribution-validation\BUILD-INFO.txt
+            ${{ env.EVIDENCE_DIR }}\BUILD-INFO.txt
             candidate\native-memory-results.xml
             candidate\release-memory-results.xml
             candidate\auto-policy-results.xml
